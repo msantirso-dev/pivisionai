@@ -1,0 +1,306 @@
+import { useEffect, useState } from 'react';
+import { Plus, Pencil } from 'lucide-react';
+import { rules, cameras } from '../services/api';
+import SeverityBadge from '../components/SeverityBadge';
+import GeometryEditor from '../components/GeometryEditor';
+
+const OBJECT_CLASS_OPTIONS = [
+  { id: 'person', label: 'Persona' },
+  { id: 'car', label: 'Auto' },
+  { id: 'motorcycle', label: 'Moto' },
+  { id: 'bicycle', label: 'Bicicleta' },
+  { id: 'truck', label: 'Camión' },
+  { id: 'bus', label: 'Bus' },
+];
+
+const DEFAULT_GEOMETRY_REF = { width: 640, height: 360 };
+
+export default function RulesPage() {
+  const [ruleList, setRuleList] = useState([]);
+  const [cameraList, setCameraList] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editingRule, setEditingRule] = useState(null);
+  const [snapshotUrl, setSnapshotUrl] = useState(null);
+  const [fullFrame, setFullFrame] = useState(false);
+  const [form, setForm] = useState({
+    camera_id: '',
+    name: '',
+    rule_type: 'zone_intrusion',
+    severity: 'medium',
+    object_classes: ['person'],
+    geometry: {},
+    actions: { webhook: true, mqtt: false, visual_alert: true },
+  });
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    const [rulesRes, camsRes] = await Promise.all([rules.list(), cameras.list()]);
+    setRuleList(rulesRes.data);
+    setCameraList(camsRes.data);
+    if (camsRes.data.length > 0 && !form.camera_id) {
+      setForm((f) => ({ ...f, camera_id: camsRes.data[0].id }));
+    }
+  };
+
+  const loadSnapshot = async (cameraId) => {
+    try {
+      if (snapshotUrl?.startsWith('blob:')) {
+        URL.revokeObjectURL(snapshotUrl);
+      }
+      const url = await cameras.snapshotBlobUrl(cameraId);
+      setSnapshotUrl(url);
+    } catch {
+      setSnapshotUrl(null);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (snapshotUrl?.startsWith('blob:')) {
+        URL.revokeObjectURL(snapshotUrl);
+      }
+    };
+  }, [snapshotUrl]);
+
+  const openEditor = async (rule) => {
+    setEditingRule(rule);
+    setForm({
+      camera_id: rule.camera_id,
+      name: rule.name,
+      rule_type: rule.rule_type,
+      severity: rule.severity,
+      object_classes: rule.object_classes,
+      geometry: rule.geometry || {},
+      actions: rule.actions || {},
+    });
+    await loadSnapshot(rule.camera_id);
+  };
+
+  const openCreateForm = async () => {
+    setShowForm(true);
+    setEditingRule(null);
+    if (form.camera_id) await loadSnapshot(form.camera_id);
+  };
+
+  const toggleObjectClass = (classId) => {
+    setForm((f) => {
+      const current = f.object_classes || [];
+      const next = current.includes(classId)
+        ? current.filter((c) => c !== classId)
+        : [...current, classId];
+      return { ...f, object_classes: next.length ? next : [classId] };
+    });
+  };
+
+  const buildDefaultGeometry = (ruleType, useFullFrame = false) => {
+    const ref = DEFAULT_GEOMETRY_REF;
+    if (useFullFrame || ruleType === 'zone_intrusion') {
+      return {
+        polygon: [[10, 10], [630, 10], [630, 350], [10, 350]],
+        reference_size: ref,
+      };
+    }
+    return {
+      line: { start: [100, 180], end: [540, 180] },
+      direction: 'any',
+      reference_size: ref,
+    };
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!form.object_classes?.length) {
+      alert('Seleccione al menos un tipo de objeto a detectar');
+      return;
+    }
+
+    const geometry = form.geometry?.line || form.geometry?.polygon
+      ? { ...form.geometry, reference_size: form.geometry.reference_size || DEFAULT_GEOMETRY_REF }
+      : buildDefaultGeometry(form.rule_type, fullFrame);
+
+    await rules.create({ ...form, geometry });
+    setShowForm(false);
+    setFullFrame(false);
+    loadData();
+  };
+
+  const handleSaveGeometry = async () => {
+    if (!editingRule) return;
+    await rules.update(editingRule.id, { geometry: form.geometry });
+    setEditingRule(null);
+    loadData();
+  };
+
+  const ruleTypeLabels = {
+    line_crossing: 'Cruce de línea',
+    zone_intrusion: 'Intrusión en zona',
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Reglas Inteligentes</h1>
+          <p className="text-gray-400">
+            Las alertas se generan cuando YOLO detecta un objeto y cumple una regla activa.
+          </p>
+        </div>
+        <button onClick={openCreateForm} className="btn-primary flex items-center gap-2">
+          <Plus className="w-4 h-4" /> Nueva Regla
+        </button>
+      </div>
+
+      {(showForm || editingRule) && (
+        <div className="card">
+          <h2 className="font-semibold mb-4">
+            {editingRule ? `Editar geometría: ${editingRule.name}` : 'Crear Regla'}
+          </h2>
+
+          {!editingRule ? (
+            <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm text-gray-400">Cámara</label>
+                <select
+                  className="input"
+                  value={form.camera_id}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, camera_id: e.target.value }));
+                    loadSnapshot(e.target.value);
+                  }}
+                >
+                  {cameraList.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-gray-400">Nombre</label>
+                <input className="input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
+              </div>
+              <div>
+                <label className="text-sm text-gray-400">Tipo de detección</label>
+                <select className="input" value={form.rule_type} onChange={(e) => setForm((f) => ({ ...f, rule_type: e.target.value, geometry: {} }))}>
+                  <option value="zone_intrusion">Intrusión en zona (recomendado)</option>
+                  <option value="line_crossing">Cruce de línea</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-gray-400">Criticidad</label>
+                <select className="input" value={form.severity} onChange={(e) => setForm((f) => ({ ...f, severity: e.target.value }))}>
+                  <option value="low">Baja</option>
+                  <option value="medium">Media</option>
+                  <option value="high">Alta</option>
+                  <option value="critical">Crítica</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="text-sm text-gray-400 mb-2 block">Objetos a detectar</label>
+                <div className="flex flex-wrap gap-3">
+                  {OBJECT_CLASS_OPTIONS.map(({ id, label }) => (
+                    <label key={id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={form.object_classes.includes(id)}
+                        onChange={() => toggleObjectClass(id)}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              {form.rule_type === 'zone_intrusion' && (
+                <div className="col-span-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={fullFrame}
+                      onChange={(e) => {
+                        setFullFrame(e.target.checked);
+                        if (e.target.checked) {
+                          setForm((f) => ({ ...f, geometry: buildDefaultGeometry('zone_intrusion', true) }));
+                        }
+                      }}
+                    />
+                    Detectar en toda la imagen (sin dibujar zona)
+                  </label>
+                </div>
+              )}
+              {snapshotUrl && !fullFrame && (
+                <div className="col-span-2">
+                  <label className="text-sm text-gray-400 mb-2 block">Dibujar zona/línea</label>
+                  <GeometryEditor
+                    imageUrl={snapshotUrl}
+                    ruleType={form.rule_type}
+                    geometry={form.geometry}
+                    onChange={(geo) => setForm((f) => ({ ...f, geometry: geo }))}
+                  />
+                </div>
+              )}
+              <div className="col-span-2 flex gap-3">
+                <button type="button" onClick={() => setShowForm(false)} className="btn-secondary">Cancelar</button>
+                <button type="submit" className="btn-primary">Crear Regla</button>
+              </div>
+            </form>
+          ) : (
+            <div className="space-y-4">
+              {snapshotUrl ? (
+                <GeometryEditor
+                  imageUrl={snapshotUrl}
+                  ruleType={form.rule_type}
+                  geometry={form.geometry}
+                  onChange={(geo) => setForm((f) => ({ ...f, geometry: geo }))}
+                />
+              ) : (
+                <p className="text-gray-500">No se pudo cargar snapshot de la cámara</p>
+              )}
+              <div className="flex gap-3">
+                <button onClick={() => setEditingRule(null)} className="btn-secondary">Cancelar</button>
+                <button onClick={handleSaveGeometry} className="btn-primary flex items-center gap-2">
+                  <Pencil className="w-4 h-4" /> Guardar Geometría
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="card overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-400 border-b border-dark-700">
+              <th className="pb-3 pr-4">Nombre</th>
+              <th className="pb-3 pr-4">Tipo</th>
+              <th className="pb-3 pr-4">Criticidad</th>
+              <th className="pb-3 pr-4">Objetos</th>
+              <th className="pb-3 pr-4">Estado</th>
+              <th className="pb-3">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ruleList.length === 0 ? (
+              <tr><td colSpan={6} className="py-8 text-center text-gray-500">Sin reglas configuradas</td></tr>
+            ) : (
+              ruleList.map((rule) => (
+                <tr key={rule.id} className="border-b border-dark-700/50">
+                  <td className="py-3 pr-4 font-medium">{rule.name}</td>
+                  <td className="py-3 pr-4">{ruleTypeLabels[rule.rule_type] || rule.rule_type}</td>
+                  <td className="py-3 pr-4"><SeverityBadge severity={rule.severity} /></td>
+                  <td className="py-3 pr-4">{rule.object_classes?.join(', ')}</td>
+                  <td className="py-3 pr-4">{rule.is_active ? 'Activa' : 'Inactiva'}</td>
+                  <td className="py-3">
+                    <button onClick={() => openEditor(rule)} className="btn-secondary text-xs flex items-center gap-1">
+                      <Pencil className="w-3 h-3" /> Editar zona
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
