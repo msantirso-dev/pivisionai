@@ -33,9 +33,9 @@ export default function CamerasPage() {
     }
   };
 
-  const handleSnapshot = async (id) => {
+  const handleSnapshot = async (cam) => {
     try {
-      await cameras.openSnapshot(id);
+      await cameras.downloadSnapshot(cam.id, cam.name);
     } catch (err) {
       alert(err.response?.data?.detail || err.message || 'Error al capturar snapshot');
     }
@@ -102,7 +102,7 @@ export default function CamerasPage() {
                 <button onClick={() => handleTest(cam.id)} className="btn-secondary text-sm flex items-center gap-1">
                   <Wifi className="w-3 h-3" /> Probar
                 </button>
-                <button onClick={() => handleSnapshot(cam.id)} className="btn-secondary text-sm flex items-center gap-1">
+                <button onClick={() => handleSnapshot(cam)} className="btn-secondary text-sm flex items-center gap-1">
                   <CameraIcon className="w-3 h-3" /> Snapshot
                 </button>
                 <button onClick={() => handleDelete(cam.id)} className="btn-secondary text-sm text-red-400">

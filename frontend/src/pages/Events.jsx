@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { events, createEventWebSocket } from '../services/api';
 import SeverityBadge, { StatusBadge } from '../components/SeverityBadge';
+import EventSnapshotThumb from '../components/EventSnapshotThumb';
 import { format } from 'date-fns';
 import { Filter, Volume2 } from 'lucide-react';
 
@@ -15,7 +16,10 @@ export default function EventsPage() {
     const ws = createEventWebSocket((msg) => {
       if (msg.type === 'event') {
         setEventList((prev) => [msg.data, ...prev]);
-        if (soundEnabled && ['high', 'critical'].includes(msg.data.severity)) {
+        const playSound =
+          msg.data.actions?.sound_alert ||
+          ['high', 'critical'].includes(msg.data.severity);
+        if (soundEnabled && playSound) {
           playAlert();
         }
       }
@@ -111,6 +115,7 @@ export default function EventsPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-gray-400 border-b border-dark-700">
+              <th className="pb-3 pr-4">Captura</th>
               <th className="pb-3 pr-4">Hora</th>
               <th className="pb-3 pr-4">Evento</th>
               <th className="pb-3 pr-4">Objeto</th>
@@ -121,12 +126,18 @@ export default function EventsPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="py-8 text-center text-gray-500">Cargando...</td></tr>
+              <tr><td colSpan={7} className="py-8 text-center text-gray-500">Cargando...</td></tr>
             ) : eventList.length === 0 ? (
-              <tr><td colSpan={6} className="py-8 text-center text-gray-500">Sin eventos</td></tr>
+              <tr><td colSpan={7} className="py-8 text-center text-gray-500">Sin eventos</td></tr>
             ) : (
               eventList.map((evt) => (
                 <tr key={evt.id} className="border-b border-dark-700/50 hover:bg-dark-900/50">
+                  <td className="py-3 pr-4">
+                    <EventSnapshotThumb
+                      snapshotUrl={evt.snapshot_url}
+                      alt={evt.description || evt.event_type}
+                    />
+                  </td>
                   <td className="py-3 pr-4 text-gray-400 whitespace-nowrap">
                     {evt.occurred_at && format(new Date(evt.occurred_at), 'HH:mm:ss dd/MM')}
                   </td>

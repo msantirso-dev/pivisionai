@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.config import get_settings
 from app.core.security import get_password_hash
@@ -18,6 +18,11 @@ settings = get_settings()
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(
+            text(
+                "ALTER TABLE detection_rules ADD COLUMN IF NOT EXISTS context_description TEXT"
+            )
+        )
     logger.info("Database tables created")
 
     async with AsyncSessionLocal() as session:

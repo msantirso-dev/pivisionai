@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, cameras, correlations, events, evidence, health, integrations, llm, rules, websocket
+from app.api import auth, cameras, correlations, events, evidence, health, integrations, llm, notifications, rules, websocket
 from app.config import get_settings
 from app.database import engine
 from app.models import Base
@@ -96,6 +96,7 @@ app.include_router(health.router, prefix=api_prefix)
 app.include_router(evidence.router, prefix=api_prefix)
 app.include_router(correlations.router, prefix=api_prefix)
 app.include_router(integrations.router, prefix=api_prefix)
+app.include_router(notifications.router, prefix=api_prefix)
 app.include_router(llm.router, prefix=api_prefix)
 app.include_router(websocket.router)
 

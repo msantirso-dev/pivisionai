@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.models import (
@@ -30,7 +31,7 @@ from app.services.event_scorer import calculate_event_score
 from app.services.health_service import health_service
 from app.services.notification_service import notification_service
 from app.services.rule_engine import rule_engine
-from app.services.camera_capture import capture_frame_np
+from app.services.camera_capture import capture_frame_np, capture_live_frame
 from app.services.rtsp_service import resolve_camera_rtsp_urls, rtsp_service
 from app.services.websocket_manager import ws_manager
 from app.workers.celery_app import celery_app
@@ -81,6 +82,36 @@ def scale_geometry(geometry: dict, frame_w: int, frame_h: int) -> dict:
     return scaled
 
 
+def _should_send_external_notifications(actions: dict) -> bool:
+    if not actions:
+        return False
+    return bool(actions.get("telegram") or actions.get("webhook") or actions.get("mqtt"))
+
+
+async def _should_describe_with_llm(session: AsyncSession, triggered: dict) -> bool:
+    """First detection per rule (or after 1h cooldown) triggers LLM image description."""
+    rule_id = triggered.get("rule_id")
+    if not rule_id:
+        return False
+
+    actions = triggered.get("actions", {})
+    if actions.get("llm_describe") is False:
+        return False
+
+    from app.services.llm_config import load_llm_config
+    from app.services.llm_cooldown import try_acquire_describe_slot
+
+    cfg = await load_llm_config(session)
+    if not cfg.get("enabled") or not cfg.get("analyze_on_event"):
+        return False
+
+    if not try_acquire_describe_slot(str(rule_id)):
+        logger.debug("LLM describe skipped for rule %s (cooldown active)", rule_id)
+        return False
+
+    return True
+
+
 async def _get_camera_rules(session: AsyncSession, camera_id: UUID):
     rules_result = await session.execute(
         select(DetectionRule).where(
@@ -110,6 +141,7 @@ async def _get_camera_rules(session: AsyncSession, camera_id: UUID):
             "object_classes": r.object_classes,
             "min_confidence": r.min_confidence,
             "actions": r.actions,
+            "context_description": r.context_description or "",
             "schedule_id": str(r.schedule_id) if r.schedule_id else None,
             "is_active": r.is_active,
         }
@@ -135,7 +167,11 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
         track_id=triggered.get("track_id"),
         confidence=triggered.get("confidence"),
         description=triggered.get("description"),
-        metadata_=triggered.get("metadata", {}),
+        metadata_={
+            **triggered.get("metadata", {}),
+            "rule_name": triggered.get("rule_name"),
+            "context_description": triggered.get("context_description") or "",
+        },
     )
     session.add(event)
     await session.flush()
@@ -158,11 +194,18 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
         )
     )
 
-    rtsp_main, rtsp_sub = resolve_camera_rtsp_urls(camera)
-    rtsp_url = rtsp_sub if settings.use_substream_for_ai and rtsp_sub else rtsp_main
-    snapshot = rtsp_service.capture_snapshot(rtsp_url, camera.id)
-    if snapshot:
-        filepath, width, height = snapshot
+    import os
+    from datetime import datetime, timezone
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    jpeg_bytes, width, height, _source = capture_live_frame(camera)
+    snapshot_url = None
+    if jpeg_bytes:
+        filename = f"{event.id}_{timestamp}.jpg"
+        filepath = os.path.join(settings.snapshots_path, filename)
+        os.makedirs(settings.snapshots_path, exist_ok=True)
+        with open(filepath, "wb") as f:
+            f.write(jpeg_bytes)
         session.add(
             EventSnapshot(
                 event_id=event.id,
@@ -172,9 +215,14 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
                 annotations=triggered.get("metadata", {}),
             )
         )
+        snapshot_url = f"/api/v1/evidence/snapshots/{filename}"
 
     await session.commit()
     await session.refresh(event)
+
+    actions = triggered.get("actions", {})
+    run_llm_describe = await _should_describe_with_llm(session, triggered)
+    defer_notifications = run_llm_describe and _should_send_external_notifications(actions)
 
     event_dict = {
         "id": str(event.id),
@@ -187,15 +235,20 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
         "occurred_at": event.occurred_at.isoformat(),
         "metadata": event.metadata_,
         "score": score_data,
+        "snapshot_url": snapshot_url,
+        "status": event.status.value if hasattr(event.status, "value") else event.status,
+        "actions": actions,
     }
 
     await ws_manager.send_event(event_dict)
 
-    actions = triggered.get("actions", {})
-    if actions.get("webhook") or actions.get("mqtt") or settings.webhook_enabled or settings.mqtt_enabled:
-        send_event_notifications.delay(str(event.id), actions)
-
-    analyze_event_with_llm.delay(str(event.id))
+    if defer_notifications:
+        analyze_event_with_llm.delay(str(event.id), actions, notify_after=True)
+    else:
+        if _should_send_external_notifications(actions):
+            send_event_notifications.delay(str(event.id), actions)
+        if run_llm_describe:
+            analyze_event_with_llm.delay(str(event.id))
 
     return event
 
@@ -225,7 +278,7 @@ def analyze_camera_frame(self, camera_id: str):
                 confidence=camera.ai_confidence,
                 min_object_size=camera.ai_min_object_size,
             )
-            detections = ai_service.assign_track_ids(camera_id, detections)
+            detections = ai_service.assign_track_ids(camera_id, detections, frame_width=frame_w)
 
             rules_data, schedule_map = await _get_camera_rules(session, camera.id)
             scaled_rules = []
@@ -418,42 +471,66 @@ def poll_dahua_events():
 def send_event_notifications(event_id: str, actions: dict):
     async def _notify():
         async with WorkerSession() as session:
-            result = await session.execute(select(Event).where(Event.id == UUID(event_id)))
+            result = await session.execute(
+                select(Event)
+                .options(selectinload(Event.snapshots))
+                .where(Event.id == UUID(event_id))
+            )
             event = result.scalar_one_or_none()
             if not event:
                 return
 
+            cam_result = await session.execute(select(Camera).where(Camera.id == event.camera_id))
+            camera = cam_result.scalar_one_or_none()
+
+            snapshot_path = None
+            snapshot_url = None
+            if event.snapshots:
+                import os
+
+                snapshot_path = event.snapshots[0].file_path
+                snapshot_url = f"/api/v1/evidence/snapshots/{os.path.basename(snapshot_path)}"
+
             event_dict = {
                 "id": str(event.id),
                 "camera_id": str(event.camera_id),
+                "camera_name": camera.name if camera else "",
                 "event_type": event.event_type,
                 "severity": event.severity.value if hasattr(event.severity, "value") else event.severity,
                 "object_class": event.object_class,
                 "description": event.description,
+                "confidence": event.confidence,
                 "occurred_at": event.occurred_at.isoformat(),
                 "metadata": event.metadata_,
+                "snapshot_path": snapshot_path,
+                "snapshot_url": snapshot_url,
             }
-            await notification_service.notify_event(event_dict, actions)
+            results = await notification_service.notify_event(event_dict, actions or {})
+            logger.info("Notifications for event %s: %s", event_id, results)
 
     run_async(_notify())
 
 
 @celery_app.task(name="app.workers.tasks.analyze_event_with_llm")
-def analyze_event_with_llm(event_id: str):
+def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_after: bool = False):
     """Analyze event snapshot with Ollama or OpenAI vision."""
 
     async def _analyze():
         from app.services.llm_config import load_llm_config
+        from app.services.llm_cooldown import release_describe_slot
         from app.services.llm_service import llm_vision_service
 
         async with WorkerSession() as session:
             cfg = await load_llm_config(session)
-            if not cfg.get("enabled") or not cfg.get("analyze_on_event"):
-                return
 
             result = await session.execute(select(Event).where(Event.id == UUID(event_id)))
             event = result.scalar_one_or_none()
             if not event:
+                return
+
+            if not cfg.get("enabled") or not cfg.get("analyze_on_event"):
+                if event.rule_id:
+                    release_describe_slot(str(event.rule_id))
                 return
 
             snap_result = await session.execute(
@@ -463,10 +540,27 @@ def analyze_event_with_llm(event_id: str):
             )
             snapshot = snap_result.scalars().first()
             if not snapshot:
+                if event.rule_id:
+                    release_describe_slot(str(event.rule_id))
+                if notify_after and actions and _should_send_external_notifications(actions):
+                    send_event_notifications.delay(event_id, actions)
                 return
 
             cam_result = await session.execute(select(Camera).where(Camera.id == event.camera_id))
             camera = cam_result.scalar_one_or_none()
+
+            meta = event.metadata_ or {}
+            rule_name = meta.get("rule_name")
+            context_description = meta.get("context_description") or ""
+
+            if event.rule_id and not context_description:
+                rule_result = await session.execute(
+                    select(DetectionRule).where(DetectionRule.id == event.rule_id)
+                )
+                rule = rule_result.scalar_one_or_none()
+                if rule:
+                    rule_name = rule_name or rule.name
+                    context_description = rule.context_description or ""
 
             context = {
                 "camera_name": camera.name if camera else "",
@@ -474,6 +568,8 @@ def analyze_event_with_llm(event_id: str):
                 "event_type": event.event_type,
                 "object_class": event.object_class,
                 "description": event.description,
+                "rule_name": rule_name,
+                "context_description": context_description,
             }
 
             analysis = await llm_vision_service.analyze_image_file(
@@ -481,6 +577,10 @@ def analyze_event_with_llm(event_id: str):
             )
             if not analysis.get("success"):
                 logger.warning("LLM analysis failed for event %s: %s", event_id, analysis.get("error"))
+                if event.rule_id:
+                    release_describe_slot(str(event.rule_id))
+                if notify_after and actions and _should_send_external_notifications(actions):
+                    send_event_notifications.delay(event_id, actions)
                 return
 
             meta = dict(event.metadata_ or {})
@@ -501,6 +601,8 @@ def analyze_event_with_llm(event_id: str):
 
             await session.commit()
 
+            snapshot_url = f"/api/v1/evidence/snapshots/{os.path.basename(snapshot.file_path)}"
+
             await ws_manager.send_event(
                 {
                     "id": str(event.id),
@@ -509,11 +611,16 @@ def analyze_event_with_llm(event_id: str):
                     "severity": event.severity.value if hasattr(event.severity, "value") else event.severity,
                     "object_class": event.object_class,
                     "description": event.description,
+                    "confidence": event.confidence,
                     "occurred_at": event.occurred_at.isoformat(),
                     "metadata": event.metadata_,
+                    "snapshot_url": snapshot_url,
                     "llm_updated": True,
                 }
             )
+
+            if notify_after and actions and _should_send_external_notifications(actions):
+                send_event_notifications.delay(event_id, actions)
 
     run_async(_analyze())
 

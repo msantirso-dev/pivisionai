@@ -148,6 +148,8 @@ class RuleEngine:
 
             return {
                 "rule_id": rule.get("id"),
+                "rule_name": rule.get("name"),
+                "context_description": rule.get("context_description") or "",
                 "rule_type": "line_crossing",
                 "event_type": "line_crossing",
                 "severity": rule.get("severity", EventSeverity.MEDIUM.value),
@@ -188,6 +190,8 @@ class RuleEngine:
 
         return {
             "rule_id": rule.get("id"),
+            "rule_name": rule.get("name"),
+            "context_description": rule.get("context_description") or "",
             "rule_type": "zone_intrusion",
             "event_type": "zone_intrusion",
             "severity": rule.get("severity", EventSeverity.MEDIUM.value),

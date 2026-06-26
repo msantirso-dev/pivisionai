@@ -3,6 +3,7 @@ import { Plus, Pencil } from 'lucide-react';
 import { rules, cameras } from '../services/api';
 import SeverityBadge from '../components/SeverityBadge';
 import GeometryEditor from '../components/GeometryEditor';
+import RuleActionsEditor, { formatRuleChannels } from '../components/RuleActionsEditor';
 
 const OBJECT_CLASS_OPTIONS = [
   { id: 'person', label: 'Persona' },
@@ -29,7 +30,15 @@ export default function RulesPage() {
     severity: 'medium',
     object_classes: ['person'],
     geometry: {},
-    actions: { webhook: true, mqtt: false, visual_alert: true },
+    context_description: '',
+    actions: {
+      telegram: false,
+      webhook: false,
+      mqtt: false,
+      visual_alert: true,
+      sound_alert: false,
+      send_snapshot: true,
+    },
   });
 
   useEffect(() => {
@@ -74,7 +83,16 @@ export default function RulesPage() {
       severity: rule.severity,
       object_classes: rule.object_classes,
       geometry: rule.geometry || {},
-      actions: rule.actions || {},
+      context_description: rule.context_description || '',
+      actions: {
+        telegram: false,
+        webhook: false,
+        mqtt: false,
+        visual_alert: true,
+        sound_alert: false,
+        send_snapshot: true,
+        ...(rule.actions || {}),
+      },
     });
     await loadSnapshot(rule.camera_id);
   };
@@ -127,9 +145,13 @@ export default function RulesPage() {
     loadData();
   };
 
-  const handleSaveGeometry = async () => {
+  const handleSaveRule = async () => {
     if (!editingRule) return;
-    await rules.update(editingRule.id, { geometry: form.geometry });
+    await rules.update(editingRule.id, {
+      geometry: form.geometry,
+      actions: form.actions,
+      context_description: form.context_description || null,
+    });
     setEditingRule(null);
     loadData();
   };
@@ -156,7 +178,7 @@ export default function RulesPage() {
       {(showForm || editingRule) && (
         <div className="card">
           <h2 className="font-semibold mb-4">
-            {editingRule ? `Editar geometría: ${editingRule.name}` : 'Crear Regla'}
+            {editingRule ? `Editar regla: ${editingRule.name}` : 'Crear Regla'}
           </h2>
 
           {!editingRule ? (
@@ -211,6 +233,18 @@ export default function RulesPage() {
                   ))}
                 </div>
               </div>
+              <div className="col-span-2">
+                <label className="text-sm text-gray-400 mb-2 block">Contexto para la IA (opcional)</label>
+                <textarea
+                  className="input min-h-[88px] text-sm"
+                  placeholder="Ej: Detectar si hay una persona merodeando cerca de la puerta trasera después de las 22hs. Ignorar mascotas y sombras."
+                  value={form.context_description}
+                  onChange={(e) => setForm((f) => ({ ...f, context_description: e.target.value }))}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Describe qué querés identificar o validar. Se usa en el análisis de imagen con IA cuando la regla dispara.
+                </p>
+              </div>
               {form.rule_type === 'zone_intrusion' && (
                 <div className="col-span-2">
                   <label className="flex items-center gap-2 text-sm">
@@ -239,6 +273,10 @@ export default function RulesPage() {
                   />
                 </div>
               )}
+              <RuleActionsEditor
+                actions={form.actions}
+                onChange={(actions) => setForm((f) => ({ ...f, actions }))}
+              />
               <div className="col-span-2 flex gap-3">
                 <button type="button" onClick={() => setShowForm(false)} className="btn-secondary">Cancelar</button>
                 <button type="submit" className="btn-primary">Crear Regla</button>
@@ -246,6 +284,22 @@ export default function RulesPage() {
             </form>
           ) : (
             <div className="space-y-4">
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Contexto para la IA</label>
+                <textarea
+                  className="input min-h-[88px] text-sm w-full"
+                  placeholder="Ej: Confirmar que la persona lleva casco en el área de producción."
+                  value={form.context_description}
+                  onChange={(e) => setForm((f) => ({ ...f, context_description: e.target.value }))}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Guía al modelo de visión sobre qué buscar en la captura cuando esta regla genera una alerta.
+                </p>
+              </div>
+              <RuleActionsEditor
+                actions={form.actions}
+                onChange={(actions) => setForm((f) => ({ ...f, actions }))}
+              />
               {snapshotUrl ? (
                 <GeometryEditor
                   imageUrl={snapshotUrl}
@@ -258,8 +312,8 @@ export default function RulesPage() {
               )}
               <div className="flex gap-3">
                 <button onClick={() => setEditingRule(null)} className="btn-secondary">Cancelar</button>
-                <button onClick={handleSaveGeometry} className="btn-primary flex items-center gap-2">
-                  <Pencil className="w-4 h-4" /> Guardar Geometría
+                <button onClick={handleSaveRule} className="btn-primary flex items-center gap-2">
+                  <Pencil className="w-4 h-4" /> Guardar Regla
                 </button>
               </div>
             </div>
@@ -275,13 +329,14 @@ export default function RulesPage() {
               <th className="pb-3 pr-4">Tipo</th>
               <th className="pb-3 pr-4">Criticidad</th>
               <th className="pb-3 pr-4">Objetos</th>
+              <th className="pb-3 pr-4">Notificaciones</th>
               <th className="pb-3 pr-4">Estado</th>
               <th className="pb-3">Acciones</th>
             </tr>
           </thead>
           <tbody>
             {ruleList.length === 0 ? (
-              <tr><td colSpan={6} className="py-8 text-center text-gray-500">Sin reglas configuradas</td></tr>
+              <tr><td colSpan={7} className="py-8 text-center text-gray-500">Sin reglas configuradas</td></tr>
             ) : (
               ruleList.map((rule) => (
                 <tr key={rule.id} className="border-b border-dark-700/50">
@@ -289,10 +344,11 @@ export default function RulesPage() {
                   <td className="py-3 pr-4">{ruleTypeLabels[rule.rule_type] || rule.rule_type}</td>
                   <td className="py-3 pr-4"><SeverityBadge severity={rule.severity} /></td>
                   <td className="py-3 pr-4">{rule.object_classes?.join(', ')}</td>
+                  <td className="py-3 pr-4 text-xs text-gray-400">{formatRuleChannels(rule.actions)}</td>
                   <td className="py-3 pr-4">{rule.is_active ? 'Activa' : 'Inactiva'}</td>
                   <td className="py-3">
                     <button onClick={() => openEditor(rule)} className="btn-secondary text-xs flex items-center gap-1">
-                      <Pencil className="w-3 h-3" /> Editar zona
+                      <Pencil className="w-3 h-3" /> Editar
                     </button>
                   </td>
                 </tr>

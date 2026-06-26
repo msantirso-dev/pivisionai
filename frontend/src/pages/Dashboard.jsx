@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Camera, Bell, Activity, AlertTriangle } from 'lucide-react';
 import { cameras, events, health, createEventWebSocket } from '../services/api';
 import SeverityBadge from '../components/SeverityBadge';
+import EventSnapshotThumb from '../components/EventSnapshotThumb';
 import { format } from 'date-fns';
 
 export default function Dashboard() {
@@ -91,10 +92,11 @@ export default function Dashboard() {
               displayEvents.map((evt) => (
                 <div
                   key={evt.id}
-                  className="flex items-center justify-between p-3 bg-dark-900 rounded-lg border border-dark-700"
+                  className="flex items-center gap-3 p-3 bg-dark-900 rounded-lg border border-dark-700"
                 >
-                  <div>
-                    <p className="font-medium">{evt.description || evt.event_type}</p>
+                  <EventSnapshotThumb snapshotUrl={evt.snapshot_url} alt={evt.description} size="sm" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium truncate">{evt.description || evt.event_type}</p>
                     <p className="text-sm text-gray-400">
                       {evt.object_class && `${evt.object_class} · `}
                       {evt.occurred_at && format(new Date(evt.occurred_at), 'HH:mm:ss dd/MM')}

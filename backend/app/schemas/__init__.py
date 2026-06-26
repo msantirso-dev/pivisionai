@@ -16,6 +16,7 @@ class DetectionRuleUpdate(BaseModel):
     object_classes: Optional[List[str]] = None
     min_confidence: Optional[float] = None
     actions: Optional[Dict[str, Any]] = None
+    context_description: Optional[str] = None
     schedule_id: Optional[UUID] = None
     is_active: Optional[bool] = None
 
@@ -148,6 +149,7 @@ class DetectionRuleCreate(BaseModel):
     loitering_seconds: Optional[int] = None
     direction: Optional[str] = None
     actions: Dict[str, Any] = Field(default_factory=dict)
+    context_description: Optional[str] = None
     schedule_id: Optional[UUID] = None
 
 
@@ -162,6 +164,7 @@ class DetectionRuleResponse(BaseModel):
     object_classes: list
     min_confidence: float
     actions: dict
+    context_description: Optional[str] = None
     schedule_id: Optional[UUID]
     created_at: datetime
 
@@ -199,6 +202,7 @@ class EventResponse(BaseModel):
     metadata: dict = Field(default_factory=dict, alias="metadata_")
     occurred_at: datetime
     created_at: datetime
+    snapshot_url: Optional[str] = None
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

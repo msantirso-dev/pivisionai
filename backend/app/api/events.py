@@ -1,5 +1,6 @@
 """Events API routes."""
 
+import os
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
@@ -15,6 +16,19 @@ from app.models import Event, EventScore, EventSeverity, EventSnapshot, EventSta
 from app.schemas import EventResponse, EventSearchParams, EventUpdate, OperatorActionCreate
 
 router = APIRouter(prefix="/events", tags=["Events"])
+
+
+def _snapshot_url_for_event(event: Event) -> Optional[str]:
+    if not event.snapshots:
+        return None
+    filename = os.path.basename(event.snapshots[0].file_path)
+    return f"/api/v1/evidence/snapshots/{filename}"
+
+
+def _event_to_response(event: Event) -> EventResponse:
+    return EventResponse.model_validate(event).model_copy(
+        update={"snapshot_url": _snapshot_url_for_event(event)}
+    )
 
 
 @router.get("", response_model=list[EventResponse])
@@ -44,12 +58,18 @@ async def list_events(
     if date_to:
         conditions.append(Event.occurred_at <= date_to)
 
-    query = select(Event).order_by(Event.occurred_at.desc()).limit(limit).offset(offset)
+    query = (
+        select(Event)
+        .options(selectinload(Event.snapshots))
+        .order_by(Event.occurred_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     if conditions:
         query = query.where(and_(*conditions))
 
     result = await db.execute(query)
-    return result.scalars().all()
+    return [_event_to_response(event) for event in result.scalars().all()]
 
 
 @router.get("/search", response_model=list[EventResponse])
@@ -78,11 +98,13 @@ async def get_event(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Event).where(Event.id == event_id))
+    result = await db.execute(
+        select(Event).options(selectinload(Event.snapshots)).where(Event.id == event_id)
+    )
     event = result.scalar_one_or_none()
     if not event:
         raise HTTPException(status_code=404, detail="Evento no encontrado")
-    return event
+    return _event_to_response(event)
 
 
 @router.patch("/{event_id}", response_model=EventResponse)
@@ -116,8 +138,11 @@ async def update_event(
         db.add(action)
 
     await db.flush()
-    await db.refresh(event)
-    return event
+    result = await db.execute(
+        select(Event).options(selectinload(Event.snapshots)).where(Event.id == event.id)
+    )
+    event = result.scalar_one()
+    return _event_to_response(event)
 
 
 @router.post("/{event_id}/actions", status_code=status.HTTP_201_CREATED)

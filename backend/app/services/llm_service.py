@@ -85,8 +85,15 @@ class LLMVisionService:
             parts.append(f"Objeto detectado por YOLO: {context['object_class']}")
         if context.get("rule_name"):
             parts.append(f"Regla: {context['rule_name']}")
+        if context.get("context_description"):
+            parts.append(
+                f"Contexto de la regla (qué se busca identificar o validar): {context['context_description']}"
+            )
+            parts.append(
+                "Usá este contexto como criterio principal para evaluar la imagen y decidir si la alerta es relevante."
+            )
         if context.get("description"):
-            parts.append(f"Descripción: {context['description']}")
+            parts.append(f"Descripción automática: {context['description']}")
         return "\n".join(parts)
 
     async def _analyze_ollama(self, image_b64: str, user_prompt: str, cfg: Dict) -> Dict:

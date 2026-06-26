@@ -51,6 +51,18 @@ export const cameras = {
     });
     return res.data;
   },
+  /** Descarga snapshot autenticado (evita bloqueo de popups) */
+  downloadSnapshot: async (id, cameraName = 'camera') => {
+    const blob = await cameras.liveSnapshot(id);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${cameraName.replace(/\s+/g, '_')}_${Date.now()}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
   /** Abre snapshot en nueva pestaña con autenticación */
   openSnapshot: async (id) => {
     const blob = await cameras.liveSnapshot(id);
@@ -58,7 +70,7 @@ export const cameras = {
     const win = window.open(url, '_blank');
     if (!win) {
       URL.revokeObjectURL(url);
-      throw new Error('El navegador bloqueó la ventana emergente');
+      throw new Error('El navegador bloqueó la ventana emergente. Use descarga directa.');
     }
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   },
@@ -75,6 +87,18 @@ export const events = {
   get: (id) => api.get(`/events/${id}`),
   update: (id, data) => api.patch(`/events/${id}`, data),
   action: (id, data) => api.post(`/events/${id}/actions`, data),
+};
+
+export const evidence = {
+  loadSnapshotBlob: async (snapshotUrl) => {
+    const path = snapshotUrl.startsWith('/api/v1') ? snapshotUrl.replace('/api/v1', '') : snapshotUrl;
+    const res = await api.get(path, { responseType: 'blob', timeout: 20000 });
+    return res.data;
+  },
+  loadSnapshotBlobUrl: async (snapshotUrl) => {
+    const blob = await evidence.loadSnapshotBlob(snapshotUrl);
+    return URL.createObjectURL(blob);
+  },
 };
 
 export const rules = {
@@ -97,6 +121,11 @@ export const health = {
 export const integrations = {
   list: () => api.get('/integrations'),
   create: (data) => api.post('/integrations', data),
+};
+
+export const notifications = {
+  getConfig: () => api.get('/notifications/config'),
+  testTelegram: () => api.post('/notifications/telegram/test'),
 };
 
 export const correlations = {

@@ -228,6 +228,7 @@ class DetectionRule(Base):
     direction: Mapped[Optional[str]] = mapped_column(String(50))
     actions: Mapped[dict] = mapped_column(JSONB, default=dict)
     anti_fp_filters: Mapped[dict] = mapped_column(JSONB, default=dict)
+    context_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     schedule_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("schedules.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

@@ -34,10 +34,11 @@ class Settings(BaseSettings):
     evidence_pre_seconds: int = 10
     evidence_post_seconds: int = 20
 
-    ai_model: str = "yolov8n.pt"
-    ai_confidence: float = 0.45
+    ai_model: str = "yolov8s.pt"
+    ai_confidence: float = 0.35
     ai_min_object_size: int = 20
     ai_analysis_width: int = 640
+    ai_imgsz: int = 1280
     ai_default_fps: int = 5
     ai_load_profile: str = "medium"
     ai_device: str = "cpu"
@@ -53,6 +54,7 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     llm_max_tokens: int = 800
     llm_system_prompt: str = ""
+    llm_describe_cooldown_seconds: int = 3600
 
     rtsp_timeout: int = 10
     rtsp_reconnect_delay: int = 5
@@ -69,6 +71,10 @@ class Settings(BaseSettings):
     mqtt_topic: str = "pivision/events"
     mqtt_username: str = ""
     mqtt_password: str = ""
+
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
 
     health_check_interval: int = 30
     degraded_mode_cpu_threshold: int = 85
