@@ -27,10 +27,14 @@ from app.models import (
 from app.services.ai_service import ai_service
 from app.services.correlation_service import correlate_ivs_with_ai, should_discard_ivs
 from app.services.dahua_service import dahua_api_service
+from app.services.event_scorer import calculate_event_score
+from app.pipeline.semantic_cache import semantic_cache
 from app.services.event_review import build_review_description
 from app.services.health_service import health_service
 from app.services.notification_service import notification_service
-from app.services.rule_engine import rule_engine
+from app.pipeline.geometry import scale_geometry
+from app.pipeline.orchestrator import analysis_orchestrator
+from app.pipeline.camera_config import CameraPipelineConfig
 from app.services.camera_capture import capture_frame_np, capture_live_frame
 from app.services.rtsp_service import resolve_camera_rtsp_urls, rtsp_service
 from app.services.websocket_manager import ws_manager
@@ -53,63 +57,61 @@ def run_async(coro):
         loop.close()
 
 
-def scale_geometry(geometry: dict, frame_w: int, frame_h: int) -> dict:
-    """Scale rule geometry from editor reference size to actual frame size."""
-    if not geometry or frame_w <= 0 or frame_h <= 0:
-        return geometry or {}
-
-    ref = geometry.get("reference_size") or {"width": 640, "height": 360}
-    rw = ref.get("width") or 640
-    rh = ref.get("height") or 360
-    if rw == frame_w and rh == frame_h:
-        return geometry
-
-    sx = frame_w / rw
-    sy = frame_h / rh
-    scaled = dict(geometry)
-
-    line = geometry.get("line")
-    if line:
-        scaled["line"] = {
-            "start": [int(line["start"][0] * sx), int(line["start"][1] * sy)],
-            "end": [int(line["end"][0] * sx), int(line["end"][1] * sy)],
-        }
-
-    polygon = geometry.get("polygon")
-    if polygon:
-        scaled["polygon"] = [[int(p[0] * sx), int(p[1] * sy)] for p in polygon]
-
-    return scaled
-
-
 def _should_send_external_notifications(actions: dict) -> bool:
     if not actions:
         return False
     return bool(actions.get("telegram") or actions.get("webhook") or actions.get("mqtt"))
 
 
-async def _should_describe_with_llm(session: AsyncSession, triggered: dict) -> bool:
-    """First detection per rule (or after 1h cooldown) triggers LLM image description."""
-    rule_id = triggered.get("rule_id")
-    if not rule_id:
-        return False
+def _llm_state_signature(camera: Camera, triggered: dict) -> str:
+    return semantic_cache.build_signature(
+        triggered.get("track_id"),
+        triggered.get("object_class") or "",
+        str(triggered.get("rule_id") or "none"),
+        triggered.get("event_type", ""),
+        1,
+    )
 
-    actions = triggered.get("actions", {})
+
+async def _resolve_llm_for_event(
+    session: AsyncSession, camera: Camera, triggered: dict
+) -> tuple[bool, dict | None]:
+    """Return (call_llm, cached_analysis)."""
+    actions = triggered.get("actions") or {}
     if actions.get("llm_describe") is False:
-        return False
+        return False, None
+
+    pipeline_cfg = CameraPipelineConfig.from_camera(camera)
+    if not pipeline_cfg.llm_enabled:
+        return False, None
 
     from app.services.llm_config import load_llm_config
-    from app.services.llm_cooldown import try_acquire_describe_slot
 
     cfg = await load_llm_config(session)
-    if not cfg.get("enabled") or not cfg.get("analyze_on_event"):
-        return False
+    if not (cfg.get("enabled") and cfg.get("analyze_on_event")):
+        return False, None
 
-    if not try_acquire_describe_slot(str(rule_id)):
-        logger.debug("LLM describe skipped for rule %s (cooldown active)", rule_id)
-        return False
+    track_id = triggered.get("track_id")
+    if track_id is None:
+        return True, None
 
-    return True
+    sig = _llm_state_signature(camera, triggered)
+    call, cached = semantic_cache.should_call_llm(
+        str(camera.id), track_id, sig, pipeline_cfg.cooldown_seconds
+    )
+    if not call and cached:
+        from app.pipeline.metrics import metrics_service
+
+        metrics_service.increment(str(camera.id), "llm_calls_avoided_total")
+        return False, cached.get("analysis")
+    return True, None
+
+
+async def _should_analyze_event_with_llm(
+    session: AsyncSession, camera: Camera, triggered: dict
+) -> bool:
+    call, _ = await _resolve_llm_for_event(session, camera, triggered)
+    return call
 
 
 async def _get_camera_rules(session: AsyncSession, camera_id: UUID):
@@ -201,6 +203,12 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
     jpeg_bytes, width, height, _source = capture_live_frame(camera)
     snapshot_url = None
     if jpeg_bytes:
+        pipeline_cfg = CameraPipelineConfig.from_camera(camera)
+        zone_key = str(triggered.get("rule_id") or "global")
+        if not analysis_orchestrator.should_save_snapshot(str(camera.id), jpeg_bytes, pipeline_cfg, zone_key):
+            jpeg_bytes = None
+
+    if jpeg_bytes:
         filename = f"{event.id}_{timestamp}.jpg"
         filepath = os.path.join(settings.snapshots_path, filename)
         os.makedirs(settings.snapshots_path, exist_ok=True)
@@ -221,7 +229,19 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
     await session.refresh(event)
 
     actions = triggered.get("actions", {})
-    run_llm_describe = await _should_describe_with_llm(session, triggered)
+    run_llm_describe, cached_analysis = await _resolve_llm_for_event(session, camera, triggered)
+    if cached_analysis:
+        meta = dict(event.metadata_ or {})
+        meta["llm_analysis"] = cached_analysis
+        meta["llm_reused"] = True
+        event.metadata_ = meta
+        parsed = cached_analysis.get("parsed") or {}
+        review_text = build_review_description(parsed, event.description or "")
+        if review_text:
+            event.description = review_text
+        await session.commit()
+        await session.refresh(event)
+
     defer_notifications = run_llm_describe and _should_send_external_notifications(actions)
 
     event_dict = {
@@ -263,45 +283,31 @@ def analyze_camera_frame(self, camera_id: str):
             if not camera or not camera.is_active or not camera.ai_enabled:
                 return
 
-            frame, frame_w, frame_h, capture_source = capture_frame_np(camera)
+            rules_data, schedule_map = await _get_camera_rules(session, camera.id)
+            pipeline_result = analysis_orchestrator.process_frame(
+                camera, camera_id, rules_data, schedule_map
+            )
 
-            if frame is None:
-                camera.status = CameraStatus.OFFLINE
-                await session.commit()
-                logger.warning("No frame for camera %s (tried HTTP + RTSP)", camera_id)
+            if pipeline_result.skipped:
+                if pipeline_result.skip_reason == "no_frame":
+                    camera.status = CameraStatus.OFFLINE
+                    await session.commit()
+                    logger.debug("Camera %s skipped: %s", camera_id, pipeline_result.skip_reason)
                 return
 
             camera.status = CameraStatus.ONLINE
             camera.last_seen_at = datetime.now(timezone.utc)
 
-            detections = ai_service.detect(
-                frame,
-                confidence=camera.ai_confidence,
-                min_object_size=camera.ai_min_object_size,
-            )
-            detections = ai_service.assign_track_ids(camera_id, detections, frame_width=frame_w)
-
-            rules_data, schedule_map = await _get_camera_rules(session, camera.id)
-            scaled_rules = []
-            for rule in rules_data:
-                scaled = dict(rule)
-                scaled["geometry"] = scale_geometry(rule.get("geometry", {}), frame_w, frame_h)
-                scaled_rules.append(scaled)
-
-            triggered_events = rule_engine.evaluate_rules(
-                camera_id, detections, scaled_rules, schedule_map
-            )
-
-            if detections:
+            if pipeline_result.detections:
                 logger.info(
-                    "Camera %s: %d detections via %s, %d rules triggered",
+                    "Camera %s: %d detections via %s, %d rules triggered (pipeline)",
                     camera_id,
-                    len(detections),
-                    capture_source,
-                    len(triggered_events),
+                    len(pipeline_result.detections),
+                    pipeline_result.frame_source,
+                    len(pipeline_result.triggered_events),
                 )
 
-            for triggered in triggered_events:
+            for triggered in pipeline_result.triggered_events:
                 await _create_event(session, camera, triggered)
 
             await session.commit()
@@ -444,6 +450,8 @@ def poll_dahua_events():
             cameras = result.scalars().all()
 
             for camera in cameras:
+                if getattr(camera, "connection_mode", "local") == "cloud" or not camera.ip_address:
+                    continue
                 events = await dahua_api_service.poll_events(
                     camera.ip_address,
                     camera.dahua_api_port,
@@ -534,6 +542,44 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
                     release_describe_slot(str(event.rule_id))
                 return
 
+            cam_result = await session.execute(select(Camera).where(Camera.id == event.camera_id))
+            camera = cam_result.scalar_one_or_none()
+
+            pipeline_cfg = CameraPipelineConfig.from_camera(camera) if camera else CameraPipelineConfig()
+            if not pipeline_cfg.llm_enabled:
+                if event.rule_id:
+                    release_describe_slot(str(event.rule_id))
+                return
+
+            if event.track_id is not None and camera:
+                sig = _llm_state_signature(camera, {
+                    "track_id": event.track_id,
+                    "object_class": event.object_class,
+                    "rule_id": str(event.rule_id) if event.rule_id else None,
+                    "event_type": event.event_type,
+                })
+                call, cached = semantic_cache.should_call_llm(
+                    str(event.camera_id), event.track_id, sig, pipeline_cfg.cooldown_seconds
+                )
+                if not call and cached:
+                    from app.pipeline.metrics import metrics_service
+
+                    metrics_service.increment(str(event.camera_id), "llm_calls_avoided_total")
+                    meta = dict(event.metadata_ or {})
+                    meta["llm_analysis"] = cached.get("analysis", {})
+                    meta["llm_reused"] = True
+                    event.metadata_ = meta
+                    parsed = (cached.get("analysis") or {}).get("parsed") or {}
+                    review_text = build_review_description(parsed, event.description or "")
+                    if review_text:
+                        event.description = review_text
+                    await session.commit()
+                    if event.rule_id:
+                        release_describe_slot(str(event.rule_id))
+                    if notify_after and actions and _should_send_external_notifications(actions):
+                        send_event_notifications.delay(event_id, actions)
+                    return
+
             snap_result = await session.execute(
                 select(EventSnapshot)
                 .where(EventSnapshot.event_id == event.id)
@@ -546,9 +592,6 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
                 if notify_after and actions and _should_send_external_notifications(actions):
                     send_event_notifications.delay(event_id, actions)
                 return
-
-            cam_result = await session.execute(select(Camera).where(Camera.id == event.camera_id))
-            camera = cam_result.scalar_one_or_none()
 
             meta = event.metadata_ or {}
             rule_name = meta.get("rule_name")
@@ -571,8 +614,12 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
                 "description": event.description,
                 "rule_name": rule_name,
                 "context_description": context_description,
+                "source": "event_auto",
             }
 
+            from app.pipeline.metrics import metrics_service
+
+            metrics_service.increment(str(event.camera_id), "llm_calls_sent_total")
             analysis = await llm_vision_service.analyze_image_file(
                 snapshot.file_path, context, cfg
             )
@@ -590,6 +637,7 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
                 "model": analysis.get("model"),
                 "text": analysis.get("analysis"),
                 "parsed": analysis.get("parsed"),
+                "usage": analysis.get("usage"),
             }
             event.metadata_ = meta
             parsed = analysis.get("parsed") or {}
@@ -600,6 +648,21 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
                 event.severity = EventSeverity.CRITICAL
             elif parsed.get("threat_level") == "high":
                 event.severity = EventSeverity.HIGH
+
+            if event.track_id is not None:
+                sig = semantic_cache.build_signature(
+                    event.track_id,
+                    event.object_class or "",
+                    str(event.rule_id or "none"),
+                    event.event_type,
+                    1,
+                )
+                semantic_cache.store(
+                    str(event.camera_id),
+                    event.track_id,
+                    sig,
+                    meta.get("llm_analysis", {}),
+                )
 
             await session.commit()
 

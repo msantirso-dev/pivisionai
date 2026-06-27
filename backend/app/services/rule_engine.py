@@ -110,12 +110,36 @@ class RuleEngine:
                 if rule_type == RuleType.LINE_CROSSING.value or rule_type == "line_crossing":
                     event = self._check_line_crossing(camera_id, det, rule, geometry)
                 elif rule_type == RuleType.ZONE_INTRUSION.value or rule_type == "zone_intrusion":
+                    polygon = geometry.get("polygon")
+                    if polygon:
+                        self._sync_zone_presence(camera_id, rule.get("id"), polygon, detections)
                     event = self._check_zone_intrusion(camera_id, det, rule, geometry)
 
                 if event:
                     triggered.append(event)
 
         return triggered
+
+    def _sync_zone_presence(
+        self,
+        camera_id: str,
+        rule_id: str,
+        polygon: List[List[int]],
+        detections: List[Detection],
+    ) -> None:
+        """Remove tracks that left the zone so re-entry can trigger again."""
+        zone_key = f"{camera_id}_{rule_id}"
+        if zone_key not in self._zone_presence:
+            self._zone_presence[zone_key] = {}
+
+        inside_ids = {
+            det.track_id
+            for det in detections
+            if det.track_id is not None and point_in_polygon(det.center, polygon)
+        }
+        for track_id in list(self._zone_presence[zone_key].keys()):
+            if track_id not in inside_ids:
+                del self._zone_presence[zone_key][track_id]
 
     def _check_line_crossing(
         self, camera_id: str, det: Detection, rule: dict, geometry: dict

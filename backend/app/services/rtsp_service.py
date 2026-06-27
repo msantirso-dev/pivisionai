@@ -43,6 +43,10 @@ def build_dahua_rtsp_url(
 def resolve_camera_rtsp_urls(camera) -> Tuple[str, Optional[str]]:
     """Rebuild RTSP URLs from stored credentials (handles special chars in password)."""
     from app.core.security import decrypt_camera_password
+    from app.services.camera_connector import is_cloud_camera
+
+    if is_cloud_camera(camera) or not camera.ip_address:
+        return "", None
 
     password = decrypt_camera_password(camera.password_encrypted)
     if camera.brand.lower() == "dahua":

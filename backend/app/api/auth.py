@@ -32,8 +32,14 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Usuario inactivo")
 
-    access_token = create_access_token(str(user.id), user.role.value)
-    refresh_token = create_refresh_token(str(user.id), user.role.value)
+    access_token = create_access_token(
+        str(user.id),
+        user.role.value if hasattr(user.role, "value") else user.role,
+    )
+    refresh_token = create_refresh_token(
+        str(user.id),
+        user.role.value if hasattr(user.role, "value") else user.role,
+    )
 
     db.add(AuditLog(user_id=user.id, action="login", resource_type="user", resource_id=str(user.id)))
     await db.flush()

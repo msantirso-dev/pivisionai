@@ -1,6 +1,7 @@
 """Camera management API routes."""
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -11,14 +12,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.dependencies import get_current_user, require_roles
-from app.core.security import decrypt_camera_password, encrypt_camera_password
+from app.core.security import encrypt_camera_password
 from app.database import get_db
 from app.models import AuditLog, Camera, CameraStatus, User, UserRole
-from app.schemas import CameraCreate, CameraResponse, CameraTestResult, CameraUpdate, SnapshotResponse
+from app.schemas import (
+    CameraCreate,
+    CameraResponse,
+    CameraTestResult,
+    CameraUpdate,
+    DahuaCloudStatus,
+    PipelineABTestResponse,
+    PipelineConfigResponse,
+    PipelineConfigUpdate,
+    PipelineMetricsResponse,
+    SnapshotResponse,
+)
 from app.services.camera_capture import capture_live_frame, test_camera_connection
+from app.services.camera_connector import is_cloud_camera
 from app.services.camera_db import get_camera as load_camera, update_camera_status
+from app.services.dahua_cloud_service import dahua_cloud_service
+from app.pipeline.camera_config import CameraPipelineConfig, save_pipeline_config
+from app.pipeline.ab_test import ab_test_service
+from app.pipeline.metrics import metrics_service
+from app.pipeline.stream_manager import stream_manager
 from app.services.snapshot_cache import get_cached, set_cached
-from app.services.rtsp_service import build_dahua_rtsp_url, resolve_camera_rtsp_urls, rtsp_service
+from app.services.rtsp_service import build_dahua_rtsp_url, resolve_camera_rtsp_urls
 from app.workers.tasks import start_camera_analysis
 
 router = APIRouter(prefix="/cameras", tags=["Cameras"])
@@ -26,16 +44,29 @@ settings = get_settings()
 
 
 def _camera_to_response(camera: Camera) -> CameraResponse:
+    if is_cloud_camera(camera):
+        rtsp_main = f"cloud://{camera.device_serial or 'serial'}"
+        rtsp_sub = None
+    else:
+        rtsp_main = f"rtsp://{camera.username}:***@{camera.ip_address}:{camera.port}/..."
+        rtsp_sub = (
+            f"rtsp://{camera.username}:***@{camera.ip_address}:{camera.port}/.../subtype=1"
+            if camera.rtsp_sub
+            else None
+        )
+
     return CameraResponse(
         id=camera.id,
         name=camera.name,
         location=camera.location,
+        connection_mode=getattr(camera, "connection_mode", None) or "local",
+        device_serial=getattr(camera, "device_serial", None),
         ip_address=camera.ip_address,
         port=camera.port,
         brand=camera.brand,
         model=camera.model,
-        rtsp_main=f"rtsp://{camera.username}:***@{camera.ip_address}:{camera.port}/...",
-        rtsp_sub=f"rtsp://{camera.username}:***@{camera.ip_address}:{camera.port}/.../subtype=1" if camera.rtsp_sub else None,
+        rtsp_main=rtsp_main,
+        rtsp_sub=rtsp_sub,
         channel=camera.channel,
         zone=camera.zone,
         status=camera.status.value if hasattr(camera.status, "value") else camera.status,
@@ -51,9 +82,28 @@ def _camera_to_response(camera: Camera) -> CameraResponse:
 
 def _sync_rtsp_urls(camera: Camera) -> None:
     """Persist correctly encoded RTSP URLs from stored credentials."""
+    if is_cloud_camera(camera):
+        camera.rtsp_main = f"cloud://{camera.device_serial or ''}"
+        camera.rtsp_sub = None
+        return
+
     main, sub = resolve_camera_rtsp_urls(camera)
     camera.rtsp_main = main
     camera.rtsp_sub = sub
+
+
+@router.get("/cloud/status", response_model=DahuaCloudStatus)
+async def dahua_cloud_status(current_user: User = Depends(get_current_user)):
+    configured = dahua_cloud_service.is_configured()
+    return DahuaCloudStatus(
+        configured=configured,
+        api_base=settings.dahua_cloud_api_base,
+        message=(
+            "Cloud Dahua (Lechange) configurado"
+            if configured
+            else "Configure DAHUA_CLOUD_APP_ID y DAHUA_CLOUD_APP_SECRET en el servidor"
+        ),
+    )
 
 
 @router.get("", response_model=list[CameraResponse])
@@ -71,10 +121,24 @@ async def create_camera(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.SUPERVISOR])),
 ):
+    mode = (data.connection_mode or "local").lower()
     rtsp_main = data.rtsp_main
     rtsp_sub = data.rtsp_sub
+    dahua_api_enabled = data.dahua_api_enabled
 
-    if not rtsp_main and data.brand.lower() == "dahua":
+    if mode == "cloud":
+        if not dahua_cloud_service.is_configured():
+            raise HTTPException(
+                status_code=400,
+                detail="Cloud Dahua no configurado. Defina DAHUA_CLOUD_APP_ID y DAHUA_CLOUD_APP_SECRET.",
+            )
+        bind = dahua_cloud_service.bind_device(data.device_serial, data.password)
+        if not bind.get("success"):
+            raise HTTPException(status_code=400, detail=bind.get("error") or "No se pudo vincular en la nube")
+        rtsp_main = f"cloud://{data.device_serial}"
+        rtsp_sub = None
+        dahua_api_enabled = False
+    elif not rtsp_main and data.brand.lower() == "dahua":
         rtsp_main = build_dahua_rtsp_url(
             data.ip_address, data.port, data.username, data.password, data.channel, subtype=0
         )
@@ -85,13 +149,15 @@ async def create_camera(
     camera = Camera(
         name=data.name,
         location=data.location,
-        ip_address=data.ip_address,
+        connection_mode=mode,
+        device_serial=data.device_serial.strip() if data.device_serial else None,
+        ip_address=data.ip_address.strip() if data.ip_address else None,
         port=data.port,
         username=data.username,
         password_encrypted=encrypt_camera_password(data.password),
         brand=data.brand,
         model=data.model,
-        rtsp_main=rtsp_main,
+        rtsp_main=rtsp_main or "",
         rtsp_sub=rtsp_sub,
         onvif_url=data.onvif_url,
         channel=data.channel,
@@ -101,8 +167,15 @@ async def create_camera(
         ai_enabled=data.ai_enabled,
         ai_fps=data.ai_fps,
         ai_confidence=data.ai_confidence,
-        dahua_api_enabled=data.dahua_api_enabled,
+        dahua_api_enabled=dahua_api_enabled,
         dahua_api_port=data.dahua_api_port,
+        metadata_={
+            "analysis_mode": "event_driven",
+            "pipeline_config": CameraPipelineConfig(
+                analysis_fps=float(data.ai_fps or 2),
+                llm_enabled=data.ai_enabled,
+            ).to_storage(),
+        },
     )
     db.add(camera)
     await db.flush()
@@ -116,7 +189,7 @@ async def create_camera(
             action="create",
             resource_type="camera",
             resource_id=str(camera.id),
-            details={"name": camera.name},
+            details={"name": camera.name, "connection_mode": mode},
         )
     )
 
@@ -153,7 +226,10 @@ async def update_camera(
 
     update_data = data.model_dump(exclude_unset=True)
     if "password" in update_data:
-        camera.password_encrypted = encrypt_camera_password(update_data.pop("password"))
+        password = update_data.pop("password")
+        camera.password_encrypted = encrypt_camera_password(password)
+        if is_cloud_camera(camera) and camera.device_serial:
+            dahua_cloud_service.bind_device(camera.device_serial, password)
 
     for key, value in update_data.items():
         setattr(camera, key, value)
@@ -193,7 +269,9 @@ async def test_camera(
             test_camera_connection, camera
         )
         if method == "dahua_http":
-            message = f"{message} (API Dahua HTTP)"
+            message = f"{message} (API Dahua HTTP local)"
+        elif method == "dahua_cloud":
+            message = f"{message} (API Dahua Cloud)"
     except Exception as e:
         success, message, latency, resolution = False, str(e), None, None
 
@@ -210,7 +288,7 @@ async def live_snapshot(
     camera_id: UUID,
     current_user: User = Depends(get_current_user),
 ):
-    """Return JPEG via Dahua HTTP API (fast) or RTSP fallback. Cached 4s."""
+    """Return JPEG via cloud API, Dahua HTTP local, or RTSP fallback. Cached 4s."""
     cached = get_cached(camera_id)
     if cached:
         jpeg_bytes, width, height, source = cached
@@ -235,10 +313,12 @@ async def live_snapshot(
         raise HTTPException(status_code=504, detail=f"Error al capturar: {e}")
 
     if not jpeg_bytes:
-        raise HTTPException(
-            status_code=503,
-            detail="No se pudo obtener imagen. Verifique IP, credenciales y puerto HTTP (80) de la cámara Dahua.",
+        detail = (
+            "No se pudo obtener imagen cloud. Verifique serial, contraseña y credenciales Lechange."
+            if is_cloud_camera(camera)
+            else "No se pudo obtener imagen. Verifique IP, credenciales y puerto HTTP (80) de la cámara Dahua."
         )
+        raise HTTPException(status_code=503, detail=detail)
 
     set_cached(camera_id, jpeg_bytes, width, height, source)
     await update_camera_status(camera_id, CameraStatus.ONLINE, online=True)
@@ -293,4 +373,119 @@ async def capture_snapshot(
         width=width,
         height=height,
         captured_at=datetime.now(timezone.utc),
+    )
+
+
+async def _load_camera_or_404(db: AsyncSession, camera_id: UUID) -> Camera:
+    result = await db.execute(select(Camera).where(Camera.id == camera_id))
+    camera = result.scalar_one_or_none()
+    if not camera:
+        raise HTTPException(status_code=404, detail="Cámara no encontrada")
+    return camera
+
+
+@router.get("/{camera_id}/pipeline", response_model=PipelineConfigResponse)
+async def get_pipeline_config(
+    camera_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    camera = await _load_camera_or_404(db, camera_id)
+    config = CameraPipelineConfig.from_camera(camera)
+    from app.pipeline.stream_selector import stream_selector
+
+    return PipelineConfigResponse(
+        camera_id=camera.id,
+        config=config.model_dump(),
+        recommendation=stream_selector.get_recommendation(str(camera_id)),
+        effective_fps=config.analysis_fps,
+    )
+
+
+@router.patch("/{camera_id}/pipeline", response_model=PipelineConfigResponse)
+async def update_pipeline_config(
+    camera_id: UUID,
+    data: PipelineConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.SUPERVISOR])),
+):
+    camera = await _load_camera_or_404(db, camera_id)
+    current = CameraPipelineConfig.from_camera(camera)
+    patch = data.model_dump(exclude_unset=True)
+    merged = current.model_copy(update=patch)
+    camera.metadata_ = save_pipeline_config(camera.metadata_, merged)
+    if patch.get("analysis_fps") is not None:
+        camera.ai_fps = int(patch["analysis_fps"])
+    if patch.get("llm_enabled") is not None:
+        camera.ai_enabled = patch["llm_enabled"]
+    await db.commit()
+    await db.refresh(camera)
+    from app.pipeline.stream_selector import stream_selector
+
+    return PipelineConfigResponse(
+        camera_id=camera.id,
+        config=merged.model_dump(),
+        recommendation=stream_selector.get_recommendation(str(camera_id)),
+        effective_fps=merged.analysis_fps,
+    )
+
+
+@router.get("/{camera_id}/pipeline/metrics", response_model=PipelineMetricsResponse)
+async def get_pipeline_metrics(
+    camera_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _load_camera_or_404(db, camera_id)
+    metrics = metrics_service.get_metrics(str(camera_id))
+    llm_sent = metrics.get("llm_calls_sent_total", 0)
+    llm_avoided = metrics.get("llm_calls_avoided_total", 0)
+    shots_saved = metrics.get("screenshots_saved_total", 0)
+    shots_suppressed = metrics.get("screenshots_suppressed_total", 0)
+    total_llm = llm_sent + llm_avoided
+    savings = {
+        "llm_calls_avoided_pct": round((llm_avoided / total_llm * 100) if total_llm else 0, 1),
+        "screenshots_suppressed": shots_suppressed,
+        "screenshots_saved": shots_saved,
+        "tokens_input_estimated": metrics.get("tokens_input_estimated", 0),
+        "tokens_output_estimated": metrics.get("tokens_output_estimated", 0),
+        "bandwidth_main_stream": metrics.get("bandwidth_main_stream", 0),
+        "bandwidth_sub_stream": metrics.get("bandwidth_sub_stream", 0),
+    }
+    return PipelineMetricsResponse(camera_id=camera_id, metrics=metrics, savings=savings)
+
+
+@router.post("/{camera_id}/pipeline/ab-test", response_model=PipelineABTestResponse)
+async def run_pipeline_ab_test(
+    camera_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.SUPERVISOR])),
+):
+    camera = await _load_camera_or_404(db, camera_id)
+    config = CameraPipelineConfig.from_camera(camera)
+    config = config.model_copy(update={"enable_ab_test": True})
+
+    for stream in ("main", "sub"):
+        t0 = time.perf_counter()
+        frame, _w, _h, source, nbytes = await asyncio.to_thread(
+            stream_manager.capture, camera, config, stream, False
+        )
+        latency_ms = (time.perf_counter() - t0) * 1000
+        ab_test_service.record_sample(
+            str(camera_id),
+            stream,
+            {
+                "detections": 1 if frame is not None else 0,
+                "latency_ms": latency_ms,
+                "bytes": nbytes,
+                "false_positives": 0,
+                "source": source,
+            },
+        )
+
+    comparison = ab_test_service.compare(str(camera_id))
+    return PipelineABTestResponse(
+        camera_id=camera_id,
+        comparison=comparison,
+        recommendation=comparison.get("recommendation", "hybrid"),
     )

@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import { Plus, Wifi, Camera as CameraIcon, Trash2 } from 'lucide-react';
 import { cameras } from '../services/api';
 import CameraForm from '../components/CameraForm';
+import CameraPipelinePanel from '../components/CameraPipelinePanel';
 
 export default function CamerasPage() {
   const [cameraList, setCameraList] = useState([]);
   const [showForm, setShowForm] = useState(false);
+  const [pipelineCamera, setPipelineCamera] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -66,6 +68,14 @@ export default function CamerasPage() {
         </button>
       </div>
 
+      {pipelineCamera && (
+        <CameraPipelinePanel
+          camera={pipelineCamera}
+          onClose={() => setPipelineCamera(null)}
+          onSaved={loadCameras}
+        />
+      )}
+
       {showForm && (
         <CameraForm
           onClose={() => setShowForm(false)}
@@ -87,23 +97,36 @@ export default function CamerasPage() {
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <h3 className="font-semibold">{cam.name}</h3>
-                  <p className="text-sm text-gray-400">{cam.location || cam.ip_address}</p>
+                  <p className="text-sm text-gray-400">
+                    {cam.location || (cam.connection_mode === 'cloud' ? cam.device_serial : cam.ip_address)}
+                  </p>
+                  {cam.connection_mode === 'cloud' && (
+                    <span className="inline-block mt-1 text-xs px-2 py-0.5 rounded bg-primary-900/40 text-primary-300">
+                      Nube · {cam.device_serial}
+                    </span>
+                  )}
                 </div>
                 <span className={`text-sm capitalize ${statusColor[cam.status] || 'text-gray-400'}`}>
                   {cam.status}
                 </span>
               </div>
               <div className="text-sm text-gray-400 space-y-1 mb-4">
+                <p>
+                  Conexión: {cam.connection_mode === 'cloud' ? 'Nube (serial)' : `Local · ${cam.ip_address}`}
+                </p>
                 <p>Marca: {cam.brand} {cam.model && `· ${cam.model}`}</p>
                 <p>Canal: {cam.channel} · IA: {cam.ai_enabled ? 'Activa' : 'Inactiva'}</p>
                 <p>FPS análisis: {cam.ai_fps}</p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button onClick={() => handleTest(cam.id)} className="btn-secondary text-sm flex items-center gap-1">
                   <Wifi className="w-3 h-3" /> Probar
                 </button>
                 <button onClick={() => handleSnapshot(cam)} className="btn-secondary text-sm flex items-center gap-1">
                   <CameraIcon className="w-3 h-3" /> Snapshot
+                </button>
+                <button onClick={() => setPipelineCamera(cam)} className="btn-secondary text-sm">
+                  Pipeline IA
                 </button>
                 <button onClick={() => handleDelete(cam.id)} className="btn-secondary text-sm text-red-400">
                   <Trash2 className="w-3 h-3" />

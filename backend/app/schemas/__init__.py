@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 from app.models import EventSeverity, EventStatus, RuleType, UserRole
 
@@ -61,9 +61,11 @@ class UserResponse(BaseModel):
 class CameraCreate(BaseModel):
     name: str
     location: Optional[str] = None
-    ip_address: str
+    connection_mode: str = "local"
+    device_serial: Optional[str] = None
+    ip_address: Optional[str] = None
     port: int = 554
-    username: str
+    username: str = "admin"
     password: str
     brand: str = "dahua"
     model: Optional[str] = None
@@ -75,25 +77,48 @@ class CameraCreate(BaseModel):
     group_id: Optional[UUID] = None
     zone: Optional[str] = None
     ai_enabled: bool = True
-    ai_fps: int = 5
+    ai_fps: int = 2
     ai_confidence: float = 0.45
     dahua_api_enabled: bool = True
     dahua_api_port: int = 80
+
+    @model_validator(mode="after")
+    def validate_connection(self):
+        mode = (self.connection_mode or "local").lower()
+        if mode == "cloud":
+            serial = (self.device_serial or "").strip()
+            if not serial:
+                raise ValueError("El número de serie es obligatorio para conexión cloud")
+            if not self.password:
+                raise ValueError("La contraseña del dispositivo es obligatoria para cloud")
+            self.connection_mode = "cloud"
+            self.device_serial = serial
+            self.dahua_api_enabled = False
+        else:
+            if not (self.ip_address or "").strip():
+                raise ValueError("La IP es obligatoria para conexión local")
+            self.connection_mode = "local"
+        return self
 
 
 class CameraUpdate(BaseModel):
     name: Optional[str] = None
     location: Optional[str] = None
+    connection_mode: Optional[str] = None
+    device_serial: Optional[str] = None
     ip_address: Optional[str] = None
     port: Optional[int] = None
     username: Optional[str] = None
     password: Optional[str] = None
     rtsp_main: Optional[str] = None
     rtsp_sub: Optional[str] = None
+    channel: Optional[int] = None
     zone: Optional[str] = None
     ai_enabled: Optional[bool] = None
     ai_fps: Optional[int] = None
     ai_confidence: Optional[float] = None
+    dahua_api_enabled: Optional[bool] = None
+    dahua_api_port: Optional[int] = None
     is_active: Optional[bool] = None
 
 
@@ -101,7 +126,9 @@ class CameraResponse(BaseModel):
     id: UUID
     name: str
     location: Optional[str]
-    ip_address: str
+    connection_mode: str = "local"
+    device_serial: Optional[str] = None
+    ip_address: Optional[str]
     port: int
     brand: str
     model: Optional[str]
@@ -119,6 +146,12 @@ class CameraResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class DahuaCloudStatus(BaseModel):
+    configured: bool
+    api_base: str
+    message: str
 
 
 class CameraTestResult(BaseModel):
@@ -275,3 +308,45 @@ class IntegrationResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PipelineConfigUpdate(BaseModel):
+    main_stream_url: Optional[str] = None
+    sub_stream_url: Optional[str] = None
+    stream_mode: Optional[str] = None
+    analysis_resolution: Optional[int] = None
+    analysis_fps: Optional[float] = None
+    detector_fps: Optional[float] = None
+    llm_enabled: Optional[bool] = None
+    location_type: Optional[str] = None
+    min_motion_area: Optional[int] = None
+    ssim_threshold: Optional[float] = None
+    phash_threshold: Optional[int] = None
+    cooldown_seconds: Optional[int] = None
+    enable_ab_test: Optional[bool] = None
+    use_mog2: Optional[bool] = None
+    use_knn: Optional[bool] = None
+    use_optical_flow: Optional[bool] = None
+    histogram_threshold: Optional[float] = None
+    tracker: Optional[str] = None
+    pipeline_enabled: Optional[bool] = None
+    roi_zones: Optional[List[Dict[str, Any]]] = None
+
+
+class PipelineConfigResponse(BaseModel):
+    camera_id: UUID
+    config: Dict[str, Any]
+    recommendation: str = "hybrid"
+    effective_fps: float = 0.0
+
+
+class PipelineMetricsResponse(BaseModel):
+    camera_id: UUID
+    metrics: Dict[str, Any]
+    savings: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PipelineABTestResponse(BaseModel):
+    camera_id: UUID
+    comparison: Dict[str, Any]
+    recommendation: str

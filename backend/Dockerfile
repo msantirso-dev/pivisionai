@@ -26,7 +26,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN chmod +x entrypoint.sh && mkdir -p /data/storage/snapshots /data/storage/clips /data/storage/logs
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh && mkdir -p /data/storage/snapshots /data/storage/clips /data/storage/logs
 
 EXPOSE 8000
 

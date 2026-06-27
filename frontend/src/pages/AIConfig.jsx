@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Brain, Save, Zap, Camera } from 'lucide-react';
+import { Brain, Save, Zap, Camera, Coins } from 'lucide-react';
 import { llm, cameras } from '../services/api';
+
+function formatTokens(n) {
+  if (n == null) return '0';
+  return Number(n).toLocaleString('es-AR');
+}
 
 export default function AIConfigPage() {
   const [config, setConfig] = useState(null);
+  const [usage, setUsage] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -15,11 +21,21 @@ export default function AIConfigPage() {
 
   useEffect(() => {
     loadConfig();
+    loadUsage();
     cameras.list().then((r) => {
       setCameraList(r.data);
       if (r.data.length) setTestCameraId(r.data[0].id);
     });
   }, []);
+
+  const loadUsage = async () => {
+    try {
+      const res = await llm.getUsage();
+      setUsage(res.data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const loadConfig = async () => {
     setLoading(true);
@@ -71,6 +87,7 @@ export default function AIConfigPage() {
     try {
       const res = await llm.analyzeCameraImage(testCameraId);
       setImageAnalysis(res.data);
+      loadUsage();
     } catch (err) {
       const detail = err.response?.data?.detail;
       const apiError = err.response?.data?.error;
@@ -100,6 +117,58 @@ export default function AIConfigPage() {
           Ollama local (sin API key) o OpenAI/ChatGPT para analizar snapshots de eventos
         </p>
       </div>
+
+      {usage && (
+        <div className="card">
+          <h2 className="font-semibold flex items-center gap-2 mb-4">
+            <Coins className="w-5 h-5 text-amber-400" />
+            Consumo de tokens IA
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-dark-900 rounded-lg p-4 border border-dark-700">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Hoy</p>
+              <p className="text-2xl font-bold text-primary-300 mt-1">
+                {formatTokens(usage.today?.total_tokens)}
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                {formatTokens(usage.today?.requests)} análisis
+              </p>
+            </div>
+            <div className="bg-dark-900 rounded-lg p-4 border border-dark-700">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Total acumulado</p>
+              <p className="text-2xl font-bold text-gray-100 mt-1">
+                {formatTokens(usage.total?.total_tokens)}
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                {formatTokens(usage.total?.requests)} análisis
+              </p>
+            </div>
+            <div className="bg-dark-900 rounded-lg p-4 border border-dark-700">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Entrada (prompt)</p>
+              <p className="text-xl font-semibold text-gray-200 mt-1">
+                {formatTokens(usage.total?.prompt_tokens)}
+              </p>
+            </div>
+            <div className="bg-dark-900 rounded-lg p-4 border border-dark-700">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Salida (respuesta)</p>
+              <p className="text-xl font-semibold text-gray-200 mt-1">
+                {formatTokens(usage.total?.completion_tokens)}
+              </p>
+            </div>
+          </div>
+          {usage.by_provider && Object.keys(usage.by_provider).length > 0 && (
+            <p className="text-xs text-gray-500 mt-3">
+              Por proveedor:{' '}
+              {Object.entries(usage.by_provider)
+                .map(([p, count]) => `${p}: ${count}`)
+                .join(' · ')}
+            </p>
+          )}
+          <p className="text-xs text-gray-600 mt-2">
+            OpenAI reporta tokens reales. Ollama usa contadores del modelo (prompt_eval_count / eval_count).
+          </p>
+        </div>
+      )}
 
       <form onSubmit={handleSave} className="card space-y-5">
         <label className="flex items-center gap-3">
@@ -239,6 +308,13 @@ export default function AIConfigPage() {
             {imageAnalysis.success ? (
               <>
                 <p className="text-green-400">Proveedor: {imageAnalysis.provider}</p>
+                {imageAnalysis.usage?.total_tokens > 0 && (
+                  <p className="text-amber-300/90">
+                    Tokens: {formatTokens(imageAnalysis.usage.total_tokens)}
+                    {' '}(entrada {formatTokens(imageAnalysis.usage.prompt_tokens)} · salida{' '}
+                    {formatTokens(imageAnalysis.usage.completion_tokens)})
+                  </p>
+                )}
                 {imageAnalysis.parsed ? (
                   <pre className="text-gray-300 whitespace-pre-wrap overflow-auto max-h-64">
                     {JSON.stringify(imageAnalysis.parsed, null, 2)}

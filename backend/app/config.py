@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     dahua_poll_interval: int = 2
     dahua_event_buffer_size: int = 100
 
+    dahua_cloud_app_id: str = ""
+    dahua_cloud_app_secret: str = ""
+    dahua_cloud_api_base: str = "https://openapi.lechange.cn/openapi"
+
     webhook_enabled: bool = True
     webhook_default_url: str = ""
     mqtt_enabled: bool = False

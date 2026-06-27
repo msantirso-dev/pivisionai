@@ -367,9 +367,8 @@ export default function EventsPage() {
                   title="Seleccionar todos los visibles"
                 />
               </th>
-              <th className="pb-3 pr-4">Captura</th>
+              <th className="pb-3 pr-4 w-[280px]">Captura y observación</th>
               <th className="pb-3 pr-4">Fecha y hora</th>
-              <th className="pb-3 pr-4">Reseña de la imagen</th>
               <th className="pb-3 pr-4">Objeto</th>
               <th className="pb-3 pr-4">Criticidad</th>
               <th className="pb-3 pr-4">Estado</th>
@@ -378,9 +377,9 @@ export default function EventsPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={8} className="py-8 text-center text-gray-500">Cargando...</td></tr>
+              <tr><td colSpan={7} className="py-8 text-center text-gray-500">Cargando...</td></tr>
             ) : eventList.length === 0 ? (
-              <tr><td colSpan={8} className="py-8 text-center text-gray-500">Sin eventos para los filtros seleccionados</td></tr>
+              <tr><td colSpan={7} className="py-8 text-center text-gray-500">Sin eventos para los filtros seleccionados</td></tr>
             ) : (
               eventList.map((evt) => (
                 <tr
@@ -396,15 +395,18 @@ export default function EventsPage() {
                       onChange={() => toggleSelect(evt.id)}
                     />
                   </td>
-                  <td className="py-3 pr-4">
-                    <EventSnapshotThumb
-                      snapshotUrl={evt.snapshot_url}
-                      alt={evt.description || evt.event_type}
-                      size="lg"
-                      event={evt}
-                    />
+                  <td className="py-3 pr-4 align-top">
+                    <div className="flex flex-col gap-2 max-w-xs">
+                      <EventSnapshotThumb
+                        snapshotUrl={evt.snapshot_url}
+                        alt={evt.description || evt.event_type}
+                        size="lg"
+                        event={evt}
+                      />
+                      <EventReviewText event={evt} compact showAnalyzeButton />
+                    </div>
                   </td>
-                  <td className="py-3 pr-4 text-gray-400 whitespace-nowrap">
+                  <td className="py-3 pr-4 text-gray-400 whitespace-nowrap align-top">
                     {evt.occurred_at && (
                       <>
                         <span className="block">{format(new Date(evt.occurred_at), 'dd/MM/yyyy')}</span>
@@ -412,13 +414,10 @@ export default function EventsPage() {
                       </>
                     )}
                   </td>
-                  <td className="py-3 pr-4">
-                    <EventReviewText event={evt} />
-                  </td>
-                  <td className="py-3 pr-4 capitalize">{evt.object_class || '-'}</td>
-                  <td className="py-3 pr-4"><SeverityBadge severity={evt.severity} /></td>
-                  <td className="py-3 pr-4"><StatusBadge status={evt.status} /></td>
-                  <td className="py-3">
+                  <td className="py-3 pr-4 capitalize align-top">{evt.object_class || '-'}</td>
+                  <td className="py-3 pr-4 align-top"><SeverityBadge severity={evt.severity} /></td>
+                  <td className="py-3 pr-4 align-top"><StatusBadge status={evt.status} /></td>
+                  <td className="py-3 align-top">
                     <select
                       className="input w-auto text-xs py-1"
                       value={evt.status || 'new'}

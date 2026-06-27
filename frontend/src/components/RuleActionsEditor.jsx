@@ -61,7 +61,7 @@ export default function RuleActionsEditor({ actions = {}, onChange, contextDescr
           <span>
             <span className="block">Descripción IA de imagen</span>
             <span className="block text-xs text-gray-500">
-              Primera alerta de la regla y luego cada 1 hora (requiere LLM activo)
+              Genera una observación de lo que se ve en cada captura del evento (requiere IA activa)
             </span>
           </span>
         </label>

@@ -7,14 +7,16 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from app.pipeline.llm_analyzer import MINIMAL_LLM_PROMPT
 from app.services.llm_config import load_llm_config
+from app.services.llm_usage import extract_usage_from_response, record_llm_usage
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT = """Sos un analista de videovigilancia para centros de monitoreo.
 Analizá la imagen del evento y respondé SOLO en JSON válido con este formato:
 {
-  "summary": "reseña breve en español (1-2 oraciones) de lo que ocurre en la imagen",
+  "summary": "observación breve en español (1-2 oraciones) describiendo lo que se ve en la foto",
   "person_detected": true,
   "person_clothing": "si hay persona: colores, prendas, calzado, gorra, mochila, uniforme, etc. Si no hay persona visible, null",
   "person_description": "edad aparente, postura, acción que realiza (ej. caminando, merodeando)",
@@ -60,6 +62,10 @@ class LLMVisionService:
         context = context or {}
         user_prompt = self._build_user_prompt(context)
 
+        use_minimal = context.get("source") in ("event_auto", "event_manual", "analysis")
+        if use_minimal:
+            cfg = {**cfg, "system_prompt": MINIMAL_LLM_PROMPT}
+
         try:
             if provider == "ollama":
                 result = await self._analyze_ollama(image_b64, user_prompt, cfg)
@@ -68,6 +74,24 @@ class LLMVisionService:
             else:
                 return {"success": False, "error": f"Proveedor LLM no soportado: {provider}"}
 
+            usage = extract_usage_from_response(provider, result.get("raw"))
+            if usage.get("total_tokens", 0) <= 0 and result.get("text"):
+                words = len((user_prompt + " " + result.get("text", "")).split())
+                usage = {
+                    "prompt_tokens": words // 2,
+                    "completion_tokens": words - words // 2,
+                    "total_tokens": words,
+                    "estimated": True,
+                }
+            if usage.get("total_tokens", 0) > 0:
+                record_llm_usage(
+                    provider,
+                    result.get("model") or "",
+                    usage["prompt_tokens"],
+                    usage["completion_tokens"],
+                    source=context.get("source", "analysis"),
+                )
+
             return {
                 "success": True,
                 "provider": provider,
@@ -75,6 +99,7 @@ class LLMVisionService:
                 "analysis": result.get("text"),
                 "parsed": result.get("parsed"),
                 "raw": result.get("raw"),
+                "usage": usage,
             }
         except Exception as e:
             logger.error("LLM analysis failed: %s", e)

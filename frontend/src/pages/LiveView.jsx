@@ -71,7 +71,11 @@ export default function LiveViewPage() {
       setErrors((prev) => ({ ...prev, [cam.id]: null }));
       setSources((prev) => ({
         ...prev,
-        [cam.id]: cam.brand === 'dahua' ? 'Dahua API' : 'RTSP',
+        [cam.id]: cam.connection_mode === 'cloud'
+          ? 'Dahua Cloud'
+          : cam.brand === 'dahua'
+            ? 'Dahua API'
+            : 'RTSP',
       }));
     } catch (err) {
       const msg = await parseApiError(err);

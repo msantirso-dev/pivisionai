@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user, require_roles
 from app.database import get_db
-from app.models import Camera, Event, EventSnapshot, User, UserRole
+from app.models import Camera, DetectionRule, Event, EventSnapshot, User, UserRole
+from app.services.event_review import build_review_description
 from app.services.llm_config import load_llm_config, public_config, save_llm_config
 from app.services.llm_service import llm_vision_service
-from app.workers.tasks import analyze_event_with_llm
+from app.services.llm_usage import get_llm_usage_stats
 
 router = APIRouter(prefix="/ai/llm", tags=["LLM Vision"])
 
@@ -42,6 +43,20 @@ class LLMAnalysisResponse(BaseModel):
     analysis: str | None = None
     parsed: dict | None = None
     error: str | None = None
+    usage: dict | None = None
+
+
+class LLMUsageStats(BaseModel):
+    total: dict
+    today: dict
+    by_provider: dict
+
+
+@router.get("/usage", response_model=LLMUsageStats)
+async def get_llm_usage(
+    current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.SUPERVISOR])),
+):
+    return get_llm_usage_stats()
 
 
 @router.get("/config")
@@ -99,6 +114,16 @@ async def analyze_event(
     cam_result = await db.execute(select(Camera).where(Camera.id == event.camera_id))
     camera = cam_result.scalar_one_or_none()
 
+    meta = event.metadata_ or {}
+    context_description = meta.get("context_description") or ""
+    rule_name = meta.get("rule_name")
+    if event.rule_id and not context_description:
+        rule_result = await db.execute(select(DetectionRule).where(DetectionRule.id == event.rule_id))
+        rule = rule_result.scalar_one_or_none()
+        if rule:
+            rule_name = rule_name or rule.name
+            context_description = rule.context_description or ""
+
     cfg = await load_llm_config(db)
     context = {
         "camera_name": camera.name if camera else "",
@@ -106,6 +131,9 @@ async def analyze_event(
         "event_type": event.event_type,
         "object_class": event.object_class,
         "description": event.description,
+        "rule_name": rule_name,
+        "context_description": context_description,
+        "source": "event_manual",
     }
 
     analysis = await llm_vision_service.analyze_image_file(snapshot.file_path, context, cfg)
@@ -118,17 +146,42 @@ async def analyze_event(
         "model": analysis.get("model"),
         "text": analysis.get("analysis"),
         "parsed": analysis.get("parsed"),
+        "usage": analysis.get("usage"),
     }
     event.metadata_ = meta
-    if analysis.get("parsed", {}).get("summary"):
-        event.description = analysis["parsed"]["summary"]
-    await db.flush()
+    parsed = analysis.get("parsed") or {}
+    review_text = build_review_description(parsed, event.description or "")
+    if review_text:
+        event.description = review_text
+    await db.commit()
+    await db.refresh(event)
+
+    import os
+    from app.services.websocket_manager import ws_manager
+
+    snapshot_url = f"/api/v1/evidence/snapshots/{os.path.basename(snapshot.file_path)}"
+    await ws_manager.send_event(
+        {
+            "id": str(event.id),
+            "camera_id": str(event.camera_id),
+            "event_type": event.event_type,
+            "severity": event.severity.value if hasattr(event.severity, "value") else event.severity,
+            "object_class": event.object_class,
+            "description": event.description,
+            "confidence": event.confidence,
+            "occurred_at": event.occurred_at.isoformat(),
+            "metadata": event.metadata_,
+            "snapshot_url": snapshot_url,
+            "llm_updated": True,
+        }
+    )
 
     return LLMAnalysisResponse(
         success=True,
         provider=analysis.get("provider"),
         analysis=analysis.get("analysis"),
         parsed=analysis.get("parsed"),
+        usage=analysis.get("usage"),
     )
 
 
@@ -157,7 +210,7 @@ async def analyze_camera_live(
     cfg = {**cfg, "enabled": True}
     analysis = await llm_vision_service.analyze_image_base64(
         base64.b64encode(jpeg).decode(),
-        {"camera_name": camera.name, "location": camera.location, "capture_source": source},
+        {"camera_name": camera.name, "location": camera.location, "capture_source": source, "source": "camera_test"},
         cfg,
     )
     if not analysis.get("success"):
@@ -168,4 +221,5 @@ async def analyze_camera_live(
         provider=analysis.get("provider"),
         analysis=analysis.get("analysis"),
         parsed=analysis.get("parsed"),
+        usage=analysis.get("usage"),
     )

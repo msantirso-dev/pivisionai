@@ -38,6 +38,7 @@ export const auth = {
 
 export const cameras = {
   list: () => api.get('/cameras'),
+  cloudStatus: () => api.get('/cameras/cloud/status'),
   get: (id) => api.get(`/cameras/${id}`),
   create: (data) => api.post('/cameras', data),
   update: (id, data) => api.patch(`/cameras/${id}`, data),
@@ -78,6 +79,12 @@ export const cameras = {
   snapshotBlobUrl: async (id) => {
     const blob = await cameras.liveSnapshot(id);
     return URL.createObjectURL(blob);
+  },
+  pipeline: {
+    get: (id) => api.get(`/cameras/${id}/pipeline`),
+    update: (id, data) => api.patch(`/cameras/${id}/pipeline`, data),
+    metrics: (id) => api.get(`/cameras/${id}/pipeline/metrics`),
+    abTest: (id) => api.post(`/cameras/${id}/pipeline/ab-test`, {}, { timeout: 60000 }),
   },
 };
 
@@ -135,6 +142,7 @@ export const correlations = {
 
 export const llm = {
   getConfig: () => api.get('/ai/llm/config'),
+  getUsage: () => api.get('/ai/llm/usage'),
   updateConfig: (data) => api.put('/ai/llm/config', data),
   testConnection: () => api.post('/ai/llm/test'),
   analyzeEvent: (eventId) => api.post(`/ai/llm/events/${eventId}/analyze`, null, { timeout: 120000 }),

@@ -170,7 +170,9 @@ Documentación Swagger disponible en `/docs`.
 
 ## Configuración de cámara Dahua
 
-Al crear una cámara Dahua, las URLs RTSP se generan automáticamente:
+### Conexión local (LAN)
+
+Al crear una cámara con **IP local**, las URLs RTSP se generan automáticamente:
 
 ```
 Main:  rtsp://user:pass@IP:554/cam/realmonitor?channel=1&subtype=0
@@ -178,6 +180,23 @@ Sub:   rtsp://user:pass@IP:554/cam/realmonitor?channel=1&subtype=1
 ```
 
 El substream se usa para análisis IA; el main stream para evidencia.
+
+### Conexión cloud (número de serie)
+
+Para cámaras accesibles solo por internet (sin IP local), use **Nube (serial)** al agregar la cámara.
+
+1. Cree una aplicación en [乐橙云 / Imou Open Platform](https://open.imou.com)
+2. Configure en `.env`:
+
+```env
+DAHUA_CLOUD_APP_ID=su_app_id
+DAHUA_CLOUD_APP_SECRET=su_app_secret
+DAHUA_CLOUD_API_BASE=https://openapi.lechange.cn/openapi
+```
+
+3. Al agregar la cámara elija **Nube (serial)** e ingrese el número de serie y contraseña del dispositivo.
+
+La captura usa la API cloud (`setDeviceSnap`). IVS local no aplica en modo nube.
 
 ## Escalabilidad
 

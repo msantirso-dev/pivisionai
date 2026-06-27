@@ -116,7 +116,7 @@ export default function EventSnapshotThumb({
             />
             {showReviewInModal && event && (
               <div className="w-full card text-left">
-                <EventReviewText event={event} />
+                <EventReviewText event={event} showLabel />
               </div>
             )}
           </div>

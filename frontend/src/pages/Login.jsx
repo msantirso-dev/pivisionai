@@ -19,7 +19,13 @@ export default function Login() {
       await login(username, password);
       navigate('/');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Error de autenticación');
+      const detail = err.response?.data?.detail;
+      const msg = typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((d) => d.msg).join(', ')
+          : err.message || 'Error de autenticación';
+      setError(msg);
     } finally {
       setLoading(false);
     }
