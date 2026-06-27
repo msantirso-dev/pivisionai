@@ -12,7 +12,7 @@ from app.pipeline.camera_config import CameraPipelineConfig
 from app.pipeline.event_state_manager import event_state_manager
 from app.pipeline.evidence_deduplicator import evidence_deduplicator
 from app.pipeline.frame_sampler import frame_sampler
-from app.pipeline.llm_analyzer import apply_llm_gate_to_actions, should_invoke_llm
+from app.pipeline.llm_analyzer import should_invoke_llm
 from app.pipeline.metrics import metrics_service
 from app.pipeline.preprocessor import opencv_preprocessor
 from app.pipeline.roi_filter import roi_filter
@@ -139,14 +139,24 @@ class AnalysisOrchestrator:
             )
             if not emit:
                 continue
-            allow_llm, _ = should_invoke_llm(
+            allow_llm, llm_reason = should_invoke_llm(
                 camera_id, config, trig, len(detections)
             )
             trig = dict(trig)
-            trig["actions"] = apply_llm_gate_to_actions(trig, allow_llm)
             if not allow_llm:
-                trig.setdefault("metadata", {})["llm_reused"] = True
+                trig.setdefault("metadata", {})["llm_pipeline_skip_reason"] = llm_reason
             filtered.append(trig)
+
+        if filtered:
+            import cv2
+
+            ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if ok:
+                pipeline_jpeg = buf.tobytes()
+                for trig in filtered:
+                    trig["_pipeline_jpeg"] = pipeline_jpeg
+                    trig["_pipeline_fw"] = fw
+                    trig["_pipeline_fh"] = fh
 
         if config.enable_ab_test:
             ab_test_service.record_sample(
@@ -192,20 +202,72 @@ class AnalysisOrchestrator:
             scaled_rules.append(scaled)
         result.frame_source = source
         result.detections = detections
-        result.triggered_events = rule_engine.evaluate_rules(camera_id, detections, scaled_rules, schedule_map)
+        triggered = rule_engine.evaluate_rules(camera_id, detections, scaled_rules, schedule_map)
+        if triggered:
+            import cv2
+
+            ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if ok:
+                pipeline_jpeg = buf.tobytes()
+                triggered = [dict(t) for t in triggered]
+                for trig in triggered:
+                    trig["_pipeline_jpeg"] = pipeline_jpeg
+                    trig["_pipeline_fw"] = fw
+                    trig["_pipeline_fh"] = fh
+        result.triggered_events = triggered
         result.frame_w = fw
         result.frame_h = fh
         return result
 
-    def should_save_snapshot(self, camera_id: str, jpeg_bytes: bytes, config: CameraPipelineConfig, zone: str = "global") -> bool:
-        ok, reason = evidence_deduplicator.should_save(
+    def attach_event_snapshot(
+        self,
+        camera_id: str,
+        jpeg_bytes: bytes,
+        config: CameraPipelineConfig,
+        zone: str,
+        event_id: str,
+        timestamp: str,
+        annotations: dict,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Save or reuse evidence file; always returns snapshot_url when possible."""
+        import os
+
+        from app.config import get_settings
+
+        settings = get_settings()
+        decision, phash = evidence_deduplicator.decide(
             camera_id, jpeg_bytes, config.phash_threshold, zone
         )
-        if ok:
+
+        if decision.save_new_file:
+            filename = f"{event_id}_{timestamp}.jpg"
+            filepath = os.path.join(settings.snapshots_path, filename)
+            os.makedirs(settings.snapshots_path, exist_ok=True)
+            with open(filepath, "wb") as f:
+                f.write(jpeg_bytes)
+            evidence_deduplicator.register_saved(camera_id, zone, filepath, phash)
+            metrics_service.increment(camera_id, "screenshots_saved_total")
+            url = f"/api/v1/evidence/snapshots/{filename}"
+            return filepath, url
+
+        if decision.reuse_path:
+            metrics_service.increment(camera_id, "screenshots_suppressed_total")
+            filename = os.path.basename(decision.reuse_path)
+            url = f"/api/v1/evidence/snapshots/{filename}"
+            return decision.reuse_path, url
+
+        metrics_service.increment(camera_id, "screenshots_suppressed_total")
+        return None, None
+
+    def should_save_snapshot(self, camera_id: str, jpeg_bytes: bytes, config: CameraPipelineConfig, zone: str = "global") -> bool:
+        decision, _ = evidence_deduplicator.decide(
+            camera_id, jpeg_bytes, config.phash_threshold, zone
+        )
+        if decision.save_new_file:
             metrics_service.increment(camera_id, "screenshots_saved_total")
         else:
             metrics_service.increment(camera_id, "screenshots_suppressed_total")
-        return ok
+        return decision.save_new_file or bool(decision.reuse_path)
 
 
 analysis_orchestrator = AnalysisOrchestrator()

@@ -48,20 +48,28 @@ def test_evidence_deduplicator_blocks_duplicate():
     dedup._redis = MagicMock()
     dedup._redis.get.return_value = None
 
-    frame = _blank_frame()
+    frame = _pattern_frame(seed=10)
     ok, enc = cv2.imencode(".jpg", frame)
     assert ok
     jpeg = enc.tobytes()
 
-    should_save, reason = dedup.should_save("cam-1", jpeg, threshold=8)
-    assert should_save is True
-    assert reason == "new"
-    stored = dedup._redis.setex.call_args[0][2]
+    decision, _ = dedup.decide("cam-1", jpeg, threshold=8)
+    assert decision.save_new_file is True
+    assert decision.reason == "new"
 
-    dedup._redis.get.return_value = stored
-    should_save2, reason2 = dedup.should_save("cam-1", jpeg, threshold=8)
-    assert should_save2 is False
-    assert reason2 == "duplicate_phash"
+    dedup.register_saved("cam-1", "global", "/data/storage/snapshots/test.jpg", compute_phash(frame))
+
+    import json
+
+    dedup._redis.get.return_value = json.dumps(
+        {"phash": compute_phash(frame), "path": "/data/storage/snapshots/test.jpg"}
+    )
+
+    with patch("app.pipeline.evidence_deduplicator.os.path.exists", return_value=True):
+        decision2, _ = dedup.decide("cam-1", jpeg, threshold=8)
+    assert decision2.save_new_file is False
+    assert decision2.reason == "duplicate_phash"
+    assert decision2.reuse_path == "/data/storage/snapshots/test.jpg"
 
 
 def test_motion_gate_discards_static_frame():

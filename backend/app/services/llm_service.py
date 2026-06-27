@@ -7,7 +7,6 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from app.pipeline.llm_analyzer import MINIMAL_LLM_PROMPT
 from app.services.llm_config import load_llm_config
 from app.services.llm_usage import extract_usage_from_response, record_llm_usage
 
@@ -61,10 +60,6 @@ class LLMVisionService:
         provider = (cfg.get("provider") or "none").lower()
         context = context or {}
         user_prompt = self._build_user_prompt(context)
-
-        use_minimal = context.get("source") in ("event_auto", "event_manual", "analysis")
-        if use_minimal:
-            cfg = {**cfg, "system_prompt": MINIMAL_LLM_PROMPT}
 
         try:
             if provider == "ollama":

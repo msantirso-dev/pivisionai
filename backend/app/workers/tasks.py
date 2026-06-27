@@ -74,9 +74,12 @@ def _llm_state_signature(camera: Camera, triggered: dict) -> str:
 
 
 async def _resolve_llm_for_event(
-    session: AsyncSession, camera: Camera, triggered: dict
+    session: AsyncSession, camera: Camera, triggered: dict, has_snapshot: bool = True
 ) -> tuple[bool, dict | None]:
-    """Return (call_llm, cached_analysis)."""
+    """Return (call_llm, cached_analysis). UI observations always attempt cache reuse."""
+    if not has_snapshot:
+        return False, None
+
     actions = triggered.get("actions") or {}
     if actions.get("llm_describe") is False:
         return False, None
@@ -86,24 +89,24 @@ async def _resolve_llm_for_event(
         return False, None
 
     from app.services.llm_config import load_llm_config
+    from app.pipeline.metrics import metrics_service
 
     cfg = await load_llm_config(session)
     if not (cfg.get("enabled") and cfg.get("analyze_on_event")):
         return False, None
 
-    track_id = triggered.get("track_id")
-    if track_id is None:
-        return True, None
-
     sig = _llm_state_signature(camera, triggered)
+    track_id = triggered.get("track_id")
     call, cached = semantic_cache.should_call_llm(
         str(camera.id), track_id, sig, pipeline_cfg.cooldown_seconds
     )
     if not call and cached:
-        from app.pipeline.metrics import metrics_service
+        analysis = cached.get("analysis") or {}
+        parsed = (analysis.get("parsed") or {}) if isinstance(analysis, dict) else {}
+        if parsed.get("summary") or analysis.get("text"):
+            metrics_service.increment(str(camera.id), "llm_calls_avoided_total")
+            return False, analysis
 
-        metrics_service.increment(str(camera.id), "llm_calls_avoided_total")
-        return False, cached.get("analysis")
     return True, None
 
 
@@ -200,36 +203,46 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
     from datetime import datetime, timezone
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    jpeg_bytes, width, height, _source = capture_live_frame(camera)
-    snapshot_url = None
-    if jpeg_bytes:
-        pipeline_cfg = CameraPipelineConfig.from_camera(camera)
-        zone_key = str(triggered.get("rule_id") or "global")
-        if not analysis_orchestrator.should_save_snapshot(str(camera.id), jpeg_bytes, pipeline_cfg, zone_key):
-            jpeg_bytes = None
+    pipeline_cfg = CameraPipelineConfig.from_camera(camera)
+    zone_key = str(triggered.get("rule_id") or "global")
 
+    jpeg_bytes = triggered.get("_pipeline_jpeg")
+    width = triggered.get("_pipeline_fw")
+    height = triggered.get("_pipeline_fh")
+    if not jpeg_bytes:
+        jpeg_bytes, width, height, _source = capture_live_frame(camera)
+
+    snapshot_url = None
+    filepath = None
     if jpeg_bytes:
-        filename = f"{event.id}_{timestamp}.jpg"
-        filepath = os.path.join(settings.snapshots_path, filename)
-        os.makedirs(settings.snapshots_path, exist_ok=True)
-        with open(filepath, "wb") as f:
-            f.write(jpeg_bytes)
+        filepath, snapshot_url = analysis_orchestrator.attach_event_snapshot(
+            str(camera.id),
+            jpeg_bytes,
+            pipeline_cfg,
+            zone_key,
+            str(event.id),
+            timestamp,
+            triggered.get("metadata", {}),
+        )
+
+    if filepath:
         session.add(
             EventSnapshot(
                 event_id=event.id,
                 file_path=filepath,
-                width=width,
-                height=height,
+                width=width or 0,
+                height=height or 0,
                 annotations=triggered.get("metadata", {}),
             )
         )
-        snapshot_url = f"/api/v1/evidence/snapshots/{filename}"
 
     await session.commit()
     await session.refresh(event)
 
     actions = triggered.get("actions", {})
-    run_llm_describe, cached_analysis = await _resolve_llm_for_event(session, camera, triggered)
+    run_llm_describe, cached_analysis = await _resolve_llm_for_event(
+        session, camera, triggered, has_snapshot=bool(filepath)
+    )
     if cached_analysis:
         meta = dict(event.metadata_ or {})
         meta["llm_analysis"] = cached_analysis
@@ -259,6 +272,7 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
         "status": event.status.value if hasattr(event.status, "value") else event.status,
         "actions": actions,
         "llm_pending": run_llm_describe,
+        "llm_updated": bool(cached_analysis),
     }
 
     await ws_manager.send_event(event_dict)
@@ -551,6 +565,18 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
                     release_describe_slot(str(event.rule_id))
                 return
 
+            snap_result = await session.execute(
+                select(EventSnapshot)
+                .where(EventSnapshot.event_id == event.id)
+                .order_by(EventSnapshot.created_at.desc())
+            )
+            snapshot = snap_result.scalars().first()
+            snapshot_url = (
+                f"/api/v1/evidence/snapshots/{os.path.basename(snapshot.file_path)}"
+                if snapshot
+                else None
+            )
+
             if event.track_id is not None and camera:
                 sig = _llm_state_signature(camera, {
                     "track_id": event.track_id,
@@ -561,7 +587,9 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
                 call, cached = semantic_cache.should_call_llm(
                     str(event.camera_id), event.track_id, sig, pipeline_cfg.cooldown_seconds
                 )
-                if not call and cached:
+                analysis = (cached or {}).get("analysis") or {}
+                parsed = analysis.get("parsed") or {}
+                if not call and cached and (parsed.get("summary") or analysis.get("text")):
                     from app.pipeline.metrics import metrics_service
 
                     metrics_service.increment(str(event.camera_id), "llm_calls_avoided_total")
@@ -578,14 +606,23 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
                         release_describe_slot(str(event.rule_id))
                     if notify_after and actions and _should_send_external_notifications(actions):
                         send_event_notifications.delay(event_id, actions)
+                    await ws_manager.send_event(
+                        {
+                            "id": str(event.id),
+                            "camera_id": str(event.camera_id),
+                            "event_type": event.event_type,
+                            "severity": event.severity.value if hasattr(event.severity, "value") else event.severity,
+                            "object_class": event.object_class,
+                            "description": event.description,
+                            "confidence": event.confidence,
+                            "occurred_at": event.occurred_at.isoformat(),
+                            "metadata": event.metadata_,
+                            "snapshot_url": snapshot_url,
+                            "llm_updated": True,
+                        }
+                    )
                     return
 
-            snap_result = await session.execute(
-                select(EventSnapshot)
-                .where(EventSnapshot.event_id == event.id)
-                .order_by(EventSnapshot.created_at.desc())
-            )
-            snapshot = snap_result.scalars().first()
             if not snapshot:
                 if event.rule_id:
                     release_describe_slot(str(event.rule_id))

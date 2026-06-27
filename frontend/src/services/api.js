@@ -133,6 +133,8 @@ export const integrations = {
 
 export const notifications = {
   getConfig: () => api.get('/notifications/config'),
+  getTelegramConfig: () => api.get('/notifications/telegram/config'),
+  updateTelegramConfig: (data) => api.put('/notifications/telegram/config', data),
   testTelegram: () => api.post('/notifications/telegram/test'),
 };
 

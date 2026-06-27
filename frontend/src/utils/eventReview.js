@@ -30,7 +30,11 @@ export function getEventObservation(event) {
     }
   }
 
-  return cleanText(event?.description);
+  const desc = cleanText(event?.description);
+  if (desc && !/^person ingresó a zona/i.test(desc)) {
+    return desc;
+  }
+  return desc;
 }
 
 export function getEventReview(event) {

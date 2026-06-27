@@ -1,5 +1,5 @@
 const CHANNELS = [
-  { id: 'telegram', label: 'Telegram', hint: 'Envía mensaje + captura (requiere bot en .env)' },
+  { id: 'telegram', label: 'Telegram', hint: 'Envía mensaje + captura (configurar en Integraciones)' },
   { id: 'webhook', label: 'Webhook HTTP', hint: 'POST JSON a URL configurada' },
   { id: 'mqtt', label: 'MQTT', hint: 'Publica en broker configurado en .env' },
   { id: 'visual_alert', label: 'Panel web', hint: 'Aparece en Eventos y Dashboard en tiempo real' },
@@ -100,7 +100,7 @@ export default function RuleActionsEditor({ actions = {}, onChange, contextDescr
             <label className="text-xs text-gray-400">Chat ID override (opcional)</label>
             <input
               className="input mt-1 text-sm"
-              placeholder="Usa TELEGRAM_CHAT_ID del .env"
+              placeholder="Opcional: otro chat (usa el global si está vacío)"
               value={safeActions.telegram_chat_id || ''}
               onChange={(e) => onChange({ ...safeActions, telegram_chat_id: e.target.value || undefined })}
             />

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Plus, Send } from 'lucide-react';
+import { Plus, Save, Send } from 'lucide-react';
 import { integrations, notifications } from '../services/api';
 
 export default function IntegrationsPage() {
   const [list, setList] = useState([]);
   const [notifConfig, setNotifConfig] = useState(null);
+  const [telegram, setTelegram] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [savingTelegram, setSavingTelegram] = useState(false);
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [telegramTestResult, setTelegramTestResult] = useState(null);
   const [form, setForm] = useState({
@@ -16,12 +18,25 @@ export default function IntegrationsPage() {
 
   useEffect(() => {
     loadIntegrations();
-    notifications.getConfig().then((r) => setNotifConfig(r.data)).catch(() => {});
+    loadNotificationConfig();
   }, []);
+
+  const loadNotificationConfig = async () => {
+    try {
+      const [cfgRes, tgRes] = await Promise.all([
+        notifications.getConfig(),
+        notifications.getTelegramConfig(),
+      ]);
+      setNotifConfig(cfgRes.data);
+      setTelegram(tgRes.data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const loadIntegrations = async () => {
     const res = await integrations.list();
-    setList(res.data);
+    setList(res.data.filter((item) => item.integration_type !== 'telegram'));
   };
 
   const handleCreate = async (e) => {
@@ -32,12 +47,43 @@ export default function IntegrationsPage() {
     loadIntegrations();
   };
 
+  const handleSaveTelegram = async (e) => {
+    e.preventDefault();
+    setSavingTelegram(true);
+    setTelegramTestResult(null);
+    try {
+      const payload = { ...telegram };
+      if (payload.bot_token === '') delete payload.bot_token;
+      delete payload.bot_token_set;
+      delete payload.bot_token_masked;
+      delete payload.configured;
+      delete payload.source;
+      const res = await notifications.updateTelegramConfig(payload);
+      setTelegram(res.data);
+      await loadNotificationConfig();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Error al guardar Telegram');
+    } finally {
+      setSavingTelegram(false);
+    }
+  };
+
   const handleTestTelegram = async () => {
     setTestingTelegram(true);
     setTelegramTestResult(null);
     try {
+      if (telegram) {
+        const payload = { ...telegram };
+        if (payload.bot_token === '') delete payload.bot_token;
+        delete payload.bot_token_set;
+        delete payload.bot_token_masked;
+        delete payload.configured;
+        delete payload.source;
+        await notifications.updateTelegramConfig(payload);
+      }
       const res = await notifications.testTelegram();
       setTelegramTestResult({ success: true, message: res.data.message });
+      await loadNotificationConfig();
     } catch (err) {
       setTelegramTestResult({
         success: false,
@@ -53,8 +99,11 @@ export default function IntegrationsPage() {
     mqtt: 'MQTT',
     home_assistant: 'Home Assistant',
     fibaro: 'Fibaro HC3',
-    telegram: 'Telegram',
   };
+
+  if (!telegram) {
+    return <p className="text-gray-500">Cargando integraciones...</p>;
+  }
 
   return (
     <div className="space-y-6">
@@ -68,27 +117,74 @@ export default function IntegrationsPage() {
         </button>
       </div>
 
-      <div className="card space-y-4">
-        <h2 className="font-semibold">Telegram</h2>
-        <p className="text-sm text-gray-400">
-          Configurá el bot en <code className="text-primary-400">.env</code> o Coolify. Activá el envío en cada regla en <strong>Reglas → Acciones de alerta</strong>.
-        </p>
-        <code className="block bg-dark-900 p-3 rounded text-xs text-gray-300">
-          TELEGRAM_ENABLED=true<br />
-          TELEGRAM_BOT_TOKEN=123456:ABC...<br />
-          TELEGRAM_CHAT_ID=987654321
-        </code>
-        <p className="text-xs text-gray-500">
-          1. Hablá con @BotFather → /newbot → copiá el token<br />
-          2. Escribile a tu bot y abrí https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates para ver tu chat_id
-        </p>
+      <form onSubmit={handleSaveTelegram} className="card space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-semibold text-lg">Telegram</h2>
+            <p className="text-sm text-gray-400 mt-1">
+              Bot para alertas con captura. Activá el envío en cada regla en{' '}
+              <strong>Reglas → Acciones de alerta</strong>.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm shrink-0">
+            <input
+              type="checkbox"
+              checked={telegram.enabled !== false}
+              onChange={(e) => setTelegram((t) => ({ ...t, enabled: e.target.checked }))}
+            />
+            Habilitado
+          </label>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-sm text-gray-400">Bot Token</label>
+            <input
+              className="input w-full mt-1 font-mono text-sm"
+              type="password"
+              placeholder={telegram.bot_token_set ? telegram.bot_token_masked : '123456789:ABCdef...'}
+              value={telegram.bot_token ?? ''}
+              onChange={(e) => setTelegram((t) => ({ ...t, bot_token: e.target.value }))}
+              autoComplete="off"
+            />
+            {telegram.bot_token_set && !telegram.bot_token && (
+              <p className="text-xs text-gray-500 mt-1">Token guardado ({telegram.bot_token_masked})</p>
+            )}
+          </div>
+          <div>
+            <label className="text-sm text-gray-400">Chat ID</label>
+            <input
+              className="input w-full mt-1 font-mono text-sm"
+              placeholder="-1001234567890 o 987654321"
+              value={telegram.chat_id || ''}
+              onChange={(e) => setTelegram((t) => ({ ...t, chat_id: e.target.value }))}
+            />
+          </div>
+        </div>
+
+        <details className="text-xs text-gray-500">
+          <summary className="cursor-pointer text-gray-400 hover:text-gray-300">¿Cómo obtener token y chat ID?</summary>
+          <ol className="mt-2 list-decimal list-inside space-y-1 pl-1">
+            <li>Hablá con @BotFather en Telegram → /newbot → copiá el token.</li>
+            <li>Escribile un mensaje a tu bot.</li>
+            <li>Abrí <code className="text-primary-400">https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> y buscá <code>chat.id</code>.</li>
+          </ol>
+        </details>
+
         <div className="flex items-center gap-3 flex-wrap">
-          <span className={`text-sm ${notifConfig?.telegram_configured ? 'text-green-400' : 'text-yellow-400'}`}>
-            {notifConfig?.telegram_configured ? 'Bot configurado' : 'Bot no configurado en .env'}
+          <span className={`text-sm ${telegram.configured ? 'text-green-400' : 'text-yellow-400'}`}>
+            {telegram.configured
+              ? `Configurado${telegram.source === 'database' ? ' (guardado en app)' : ' (.env)'}`
+              : 'Falta token o chat ID'}
           </span>
+          <button type="submit" disabled={savingTelegram} className="btn-primary flex items-center gap-2 text-sm">
+            <Save className="w-4 h-4" />
+            {savingTelegram ? 'Guardando...' : 'Guardar'}
+          </button>
           <button
+            type="button"
             onClick={handleTestTelegram}
-            disabled={testingTelegram || !notifConfig?.telegram_configured}
+            disabled={testingTelegram || !telegram.configured}
             className="btn-secondary flex items-center gap-2 text-sm"
           >
             <Send className="w-4 h-4" />
@@ -100,7 +196,7 @@ export default function IntegrationsPage() {
             {telegramTestResult.message}
           </p>
         )}
-      </div>
+      </form>
 
       <div className="card space-y-2">
         <h2 className="font-semibold">Canales disponibles por regla</h2>
@@ -126,7 +222,6 @@ export default function IntegrationsPage() {
               <select className="input" value={form.integration_type} onChange={(e) => setForm((f) => ({ ...f, integration_type: e.target.value }))}>
                 <option value="webhook">Webhook</option>
                 <option value="mqtt">MQTT</option>
-                <option value="telegram">Telegram</option>
               </select>
             </div>
             <div className="col-span-2">
@@ -149,7 +244,7 @@ export default function IntegrationsPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {list.length === 0 ? (
           <div className="card col-span-2 text-center py-8 text-gray-500">
-            Las credenciales van en .env. Las reglas definen qué canal usar en cada alerta.
+            Podés agregar webhooks o MQTT adicionales. Telegram se configura arriba.
           </div>
         ) : (
           list.map((item) => (

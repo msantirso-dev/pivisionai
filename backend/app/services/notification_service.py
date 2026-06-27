@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app.config import get_settings
+from app.services.telegram_config import load_telegram_config
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -140,12 +141,21 @@ class NotificationService:
             "metadata": event.get("metadata", {}),
         }
         caption = format_event_caption(event)
+        tg_cfg = await load_telegram_config()
 
         if actions.get("telegram"):
-            chat_id = actions.get("telegram_chat_id") or settings.telegram_chat_id
-            photo_path = event.get("snapshot_path") if actions.get("send_snapshot", True) else None
-            result = await self.send_telegram(chat_id, caption, photo_path)
-            results.append({"channel": "telegram", **result})
+            if not tg_cfg.get("enabled", True):
+                results.append({"channel": "telegram", "status": "skipped", "reason": "Telegram deshabilitado"})
+            else:
+                chat_id = actions.get("telegram_chat_id") or tg_cfg.get("chat_id")
+                photo_path = event.get("snapshot_path") if actions.get("send_snapshot", True) else None
+                result = await self.send_telegram(
+                    chat_id,
+                    caption,
+                    photo_path,
+                    bot_token=tg_cfg.get("bot_token"),
+                )
+                results.append({"channel": "telegram", **result})
 
         if actions.get("webhook"):
             url = actions.get("webhook_url") or settings.webhook_default_url

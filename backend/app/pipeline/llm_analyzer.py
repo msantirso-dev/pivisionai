@@ -49,18 +49,6 @@ def should_invoke_llm(
         metrics_service.increment(camera_id, "llm_calls_avoided_total")
         return False, "semantic_cache_hit"
 
-    # Only on meaningful triggers
-    meaningful = event_type in (
-        "line_crossing",
-        "zone_intrusion",
-        "ivs_intrusion",
-        "ivs_tripwire",
-    ) or triggered.get("metadata", {}).get("force_llm")
-    if not meaningful:
-        metrics_service.increment(camera_id, "llm_calls_avoided_total")
-        return False, "not_meaningful_event"
-
-    metrics_service.increment(camera_id, "llm_calls_sent_total")
     return True, "invoke"
 
 
