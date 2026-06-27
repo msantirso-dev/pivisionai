@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 from app.core.dependencies import get_current_user
 from app.database import get_db
 from app.models import Event, EventScore, EventSeverity, EventSnapshot, EventStatus, OperatorAction, User
-from app.schemas import EventResponse, EventSearchParams, EventUpdate, OperatorActionCreate
+from app.schemas import EventBulkUpdate, EventResponse, EventSearchParams, EventUpdate, OperatorActionCreate
 
 router = APIRouter(prefix="/events", tags=["Events"])
 
@@ -90,6 +90,44 @@ async def search_events(
         db=db,
         current_user=current_user,
     )
+
+
+@router.post("/bulk")
+async def bulk_update_events(
+    data: EventBulkUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not data.event_ids:
+        raise HTTPException(status_code=400, detail="No hay eventos seleccionados")
+
+    result = await db.execute(select(Event).where(Event.id.in_(data.event_ids)))
+    found = result.scalars().all()
+    if not found:
+        raise HTTPException(status_code=404, detail="No se encontraron los eventos")
+
+    updated = 0
+    for event in found:
+        previous_status = event.status.value if hasattr(event.status, "value") else event.status
+        event.status = data.status
+        db.add(
+            OperatorAction(
+                event_id=event.id,
+                operator_id=current_user.id,
+                action="bulk_status_change",
+                previous_status=previous_status,
+                new_status=data.status.value if hasattr(data.status, "value") else data.status,
+                comment=data.comment,
+            )
+        )
+        updated += 1
+
+    await db.flush()
+    return {
+        "updated": updated,
+        "total_requested": len(data.event_ids),
+        "status": data.status.value if hasattr(data.status, "value") else data.status,
+    }
 
 
 @router.get("/{event_id}", response_model=EventResponse)

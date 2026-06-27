@@ -3,7 +3,7 @@ import { Plus, Pencil } from 'lucide-react';
 import { rules, cameras } from '../services/api';
 import SeverityBadge from '../components/SeverityBadge';
 import GeometryEditor from '../components/GeometryEditor';
-import RuleActionsEditor, { formatRuleChannels } from '../components/RuleActionsEditor';
+import RuleActionsEditor, { formatRuleChannels, formatRuleContext } from '../components/RuleActionsEditor';
 
 const OBJECT_CLASS_OPTIONS = [
   { id: 'person', label: 'Persona' },
@@ -16,6 +16,24 @@ const OBJECT_CLASS_OPTIONS = [
 
 const DEFAULT_GEOMETRY_REF = { width: 640, height: 360 };
 
+const DEFAULT_FORM = {
+  camera_id: '',
+  name: '',
+  rule_type: 'zone_intrusion',
+  severity: 'medium',
+  object_classes: ['person'],
+  geometry: {},
+  context_description: '',
+  actions: {
+    telegram: false,
+    webhook: false,
+    mqtt: false,
+    visual_alert: true,
+    sound_alert: false,
+    send_snapshot: true,
+  },
+};
+
 export default function RulesPage() {
   const [ruleList, setRuleList] = useState([]);
   const [cameraList, setCameraList] = useState([]);
@@ -23,44 +41,33 @@ export default function RulesPage() {
   const [editingRule, setEditingRule] = useState(null);
   const [snapshotUrl, setSnapshotUrl] = useState(null);
   const [fullFrame, setFullFrame] = useState(false);
-  const [form, setForm] = useState({
-    camera_id: '',
-    name: '',
-    rule_type: 'zone_intrusion',
-    severity: 'medium',
-    object_classes: ['person'],
-    geometry: {},
-    context_description: '',
-    actions: {
-      telegram: false,
-      webhook: false,
-      mqtt: false,
-      visual_alert: true,
-      sound_alert: false,
-      send_snapshot: true,
-    },
-  });
+  const [form, setForm] = useState({ ...DEFAULT_FORM });
 
   useEffect(() => {
     loadData();
   }, []);
 
   const loadData = async () => {
-    const [rulesRes, camsRes] = await Promise.all([rules.list(), cameras.list()]);
-    setRuleList(rulesRes.data);
-    setCameraList(camsRes.data);
-    if (camsRes.data.length > 0 && !form.camera_id) {
-      setForm((f) => ({ ...f, camera_id: camsRes.data[0].id }));
+    try {
+      const [rulesRes, camsRes] = await Promise.all([rules.list(), cameras.list()]);
+      setRuleList(rulesRes.data || []);
+      setCameraList(camsRes.data || []);
+      if (camsRes.data?.length > 0) {
+        setForm((f) => (f.camera_id ? f : { ...f, camera_id: camsRes.data[0].id }));
+      }
+    } catch (err) {
+      console.error('Error cargando reglas:', err);
     }
   };
 
   const loadSnapshot = async (cameraId) => {
+    if (!cameraId) return;
     try {
-      if (snapshotUrl?.startsWith('blob:')) {
-        URL.revokeObjectURL(snapshotUrl);
-      }
       const url = await cameras.snapshotBlobUrl(cameraId);
-      setSnapshotUrl(url);
+      setSnapshotUrl((prev) => {
+        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+        return url;
+      });
     } catch {
       setSnapshotUrl(null);
     }
@@ -74,23 +81,29 @@ export default function RulesPage() {
     };
   }, [snapshotUrl]);
 
+  const closeForm = () => {
+    setShowForm(false);
+    setEditingRule(null);
+    setFullFrame(false);
+    setSnapshotUrl((prev) => {
+      if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
+      return null;
+    });
+  };
+
   const openEditor = async (rule) => {
+    setShowForm(false);
     setEditingRule(rule);
     setForm({
       camera_id: rule.camera_id,
       name: rule.name,
       rule_type: rule.rule_type,
       severity: rule.severity,
-      object_classes: rule.object_classes,
+      object_classes: Array.isArray(rule.object_classes) ? rule.object_classes : ['person'],
       geometry: rule.geometry || {},
       context_description: rule.context_description || '',
       actions: {
-        telegram: false,
-        webhook: false,
-        mqtt: false,
-        visual_alert: true,
-        sound_alert: false,
-        send_snapshot: true,
+        ...DEFAULT_FORM.actions,
         ...(rule.actions || {}),
       },
     });
@@ -98,9 +111,15 @@ export default function RulesPage() {
   };
 
   const openCreateForm = async () => {
-    setShowForm(true);
+    const cameraId = form.camera_id || cameraList[0]?.id || '';
     setEditingRule(null);
-    if (form.camera_id) await loadSnapshot(form.camera_id);
+    setShowForm(true);
+    setFullFrame(false);
+    setForm({
+      ...DEFAULT_FORM,
+      camera_id: cameraId,
+    });
+    if (cameraId) await loadSnapshot(cameraId);
   };
 
   const toggleObjectClass = (classId) => {
@@ -140,8 +159,7 @@ export default function RulesPage() {
       : buildDefaultGeometry(form.rule_type, fullFrame);
 
     await rules.create({ ...form, geometry });
-    setShowForm(false);
-    setFullFrame(false);
+    closeForm();
     loadData();
   };
 
@@ -152,7 +170,7 @@ export default function RulesPage() {
       actions: form.actions,
       context_description: form.context_description || null,
     });
-    setEditingRule(null);
+    closeForm();
     loadData();
   };
 
@@ -225,25 +243,13 @@ export default function RulesPage() {
                     <label key={id} className="flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"
-                        checked={form.object_classes.includes(id)}
+                        checked={(form.object_classes || []).includes(id)}
                         onChange={() => toggleObjectClass(id)}
                       />
                       {label}
                     </label>
                   ))}
                 </div>
-              </div>
-              <div className="col-span-2">
-                <label className="text-sm text-gray-400 mb-2 block">Contexto para la IA (opcional)</label>
-                <textarea
-                  className="input min-h-[88px] text-sm"
-                  placeholder="Ej: Detectar si hay una persona merodeando cerca de la puerta trasera después de las 22hs. Ignorar mascotas y sombras."
-                  value={form.context_description}
-                  onChange={(e) => setForm((f) => ({ ...f, context_description: e.target.value }))}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Describe qué querés identificar o validar. Se usa en el análisis de imagen con IA cuando la regla dispara.
-                </p>
               </div>
               {form.rule_type === 'zone_intrusion' && (
                 <div className="col-span-2">
@@ -276,29 +282,21 @@ export default function RulesPage() {
               <RuleActionsEditor
                 actions={form.actions}
                 onChange={(actions) => setForm((f) => ({ ...f, actions }))}
+                contextDescription={form.context_description}
+                onContextChange={(value) => setForm((f) => ({ ...f, context_description: value }))}
               />
               <div className="col-span-2 flex gap-3">
-                <button type="button" onClick={() => setShowForm(false)} className="btn-secondary">Cancelar</button>
+                <button type="button" onClick={closeForm} className="btn-secondary">Cancelar</button>
                 <button type="submit" className="btn-primary">Crear Regla</button>
               </div>
             </form>
           ) : (
             <div className="space-y-4">
-              <div>
-                <label className="text-sm text-gray-400 mb-2 block">Contexto para la IA</label>
-                <textarea
-                  className="input min-h-[88px] text-sm w-full"
-                  placeholder="Ej: Confirmar que la persona lleva casco en el área de producción."
-                  value={form.context_description}
-                  onChange={(e) => setForm((f) => ({ ...f, context_description: e.target.value }))}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Guía al modelo de visión sobre qué buscar en la captura cuando esta regla genera una alerta.
-                </p>
-              </div>
               <RuleActionsEditor
                 actions={form.actions}
                 onChange={(actions) => setForm((f) => ({ ...f, actions }))}
+                contextDescription={form.context_description}
+                onContextChange={(value) => setForm((f) => ({ ...f, context_description: value }))}
               />
               {snapshotUrl ? (
                 <GeometryEditor
@@ -311,7 +309,7 @@ export default function RulesPage() {
                 <p className="text-gray-500">No se pudo cargar snapshot de la cámara</p>
               )}
               <div className="flex gap-3">
-                <button onClick={() => setEditingRule(null)} className="btn-secondary">Cancelar</button>
+                <button onClick={closeForm} className="btn-secondary">Cancelar</button>
                 <button onClick={handleSaveRule} className="btn-primary flex items-center gap-2">
                   <Pencil className="w-4 h-4" /> Guardar Regla
                 </button>
@@ -329,6 +327,7 @@ export default function RulesPage() {
               <th className="pb-3 pr-4">Tipo</th>
               <th className="pb-3 pr-4">Criticidad</th>
               <th className="pb-3 pr-4">Objetos</th>
+              <th className="pb-3 pr-4">Contexto IA</th>
               <th className="pb-3 pr-4">Notificaciones</th>
               <th className="pb-3 pr-4">Estado</th>
               <th className="pb-3">Acciones</th>
@@ -336,7 +335,7 @@ export default function RulesPage() {
           </thead>
           <tbody>
             {ruleList.length === 0 ? (
-              <tr><td colSpan={7} className="py-8 text-center text-gray-500">Sin reglas configuradas</td></tr>
+              <tr><td colSpan={8} className="py-8 text-center text-gray-500">Sin reglas configuradas</td></tr>
             ) : (
               ruleList.map((rule) => (
                 <tr key={rule.id} className="border-b border-dark-700/50">
@@ -344,6 +343,9 @@ export default function RulesPage() {
                   <td className="py-3 pr-4">{ruleTypeLabels[rule.rule_type] || rule.rule_type}</td>
                   <td className="py-3 pr-4"><SeverityBadge severity={rule.severity} /></td>
                   <td className="py-3 pr-4">{rule.object_classes?.join(', ')}</td>
+                  <td className="py-3 pr-4 text-xs text-gray-400 max-w-[200px]" title={rule.context_description || ''}>
+                    {formatRuleContext(rule.context_description)}
+                  </td>
                   <td className="py-3 pr-4 text-xs text-gray-400">{formatRuleChannels(rule.actions)}</td>
                   <td className="py-3 pr-4">{rule.is_active ? 'Activa' : 'Inactiva'}</td>
                   <td className="py-3">

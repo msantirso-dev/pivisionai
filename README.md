@@ -47,35 +47,37 @@ Suba este proyecto a un repositorio Git (GitHub, GitLab, etc.).
 
 1. Ingrese a su panel Coolify
 2. **Projects** → **New Project**
-3. **Add Resource** → **Docker Compose**
+3. **Add Resource** → **Docker Compose** (no use Nixpacks)
 4. Conecte su repositorio Git
 5. Seleccione la rama principal
+6. **Docker Compose location:** `docker-compose.yml` (raíz del repo)
+7. **Base directory:** `/`
 
 ### 3. Configurar variables de entorno
 
-En Coolify, vaya a **Environment Variables** y copie desde `.env.example`:
+En Coolify, vaya a **Environment Variables** y configure **antes del primer deploy**:
 
 ```env
 POSTGRES_PASSWORD=una-contraseña-segura-larga
 SECRET_KEY=generar-clave-aleatoria-32-caracteres-minimo
 JWT_SECRET_KEY=otra-clave-aleatoria-32-caracteres
 CORS_ORIGINS=https://su-dominio.com
-WEBHOOK_DEFAULT_URL=https://su-webhook.com/events
+VITE_API_URL=/api/v1
+VITE_WS_URL=/ws
+WEBHOOK_DEFAULT_URL=
 MQTT_ENABLED=false
 AI_DEVICE=cpu
 ```
 
-**Importante:** Nunca suba `.env` al repositorio.
+**Importante:** Nunca suba `.env` al repositorio. Si falta `POSTGRES_PASSWORD`, el deploy fallará.
 
 ### 4. Configurar dominio (Reverse Proxy)
 
-En Coolify, asigne un dominio al servicio **frontend**:
+En Coolify, asigne un dominio al servicio **frontend** (no al backend):
 
 - Dominio: `https://pivision.sudominio.com`
 - Coolify generará certificado HTTPS automáticamente
 - El nginx del frontend hace proxy a `/api/` y `/ws/` hacia el backend
-
-Para acceso directo a la API (opcional), exponga el puerto del backend con otro subdominio.
 
 ### 5. Volúmenes persistentes
 
@@ -90,12 +92,8 @@ Verifique en Coolify que los volúmenes estén persistentes.
 ### 6. Desplegar
 
 1. Click en **Deploy**
-2. Espere a que todos los servicios estén healthy
-3. Ejecute la inicialización de base de datos (primera vez):
-
-```bash
-docker exec -it pivision-backend python scripts/init_db.py
-```
+2. El build del **backend** puede tardar 10–20 min (PyTorch + YOLO). Si falla por memoria, aumente RAM del builder en Coolify.
+3. La base de datos se inicializa sola al arrancar el backend (usuario `admin` / `admin123`)
 
 ### 7. Acceder al sistema
 

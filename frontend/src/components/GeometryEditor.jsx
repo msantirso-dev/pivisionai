@@ -1,5 +1,9 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Trash2, Save } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
+
+function isValidPoint(p) {
+  return Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
+}
 
 export default function GeometryEditor({ imageUrl, ruleType, geometry, onChange, width = 640, height = 360 }) {
   const canvasRef = useRef(null);
@@ -8,11 +12,14 @@ export default function GeometryEditor({ imageUrl, ruleType, geometry, onChange,
   const imgRef = useRef(null);
 
   useEffect(() => {
-    if (geometry?.line) {
+    if (geometry?.line?.start && geometry?.line?.end) {
       setLineStart(geometry.line.start);
       setPoints([geometry.line.end]);
-    } else if (geometry?.polygon) {
-      setPoints(geometry.polygon);
+    } else if (Array.isArray(geometry?.polygon)) {
+      setPoints(geometry.polygon.filter(isValidPoint));
+      setLineStart(null);
+    } else {
+      setPoints([]);
       setLineStart(null);
     }
   }, [geometry]);
@@ -21,42 +28,47 @@ export default function GeometryEditor({ imageUrl, ruleType, geometry, onChange,
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     const img = imgRef.current;
-    if (!canvas || !ctx || !img?.complete) return;
+    if (!canvas || !ctx || !img?.complete || !img.naturalWidth) return;
 
-    canvas.width = width;
-    canvas.height = height;
-    ctx.drawImage(img, 0, 0, width, height);
+    try {
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
 
-    if (ruleType === 'line_crossing' && lineStart && points[0]) {
-      ctx.strokeStyle = '#3b82f6';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(lineStart[0], lineStart[1]);
-      ctx.lineTo(points[0][0], points[0][1]);
-      ctx.stroke();
-      ctx.fillStyle = '#3b82f6';
-      ctx.beginPath();
-      ctx.arc(lineStart[0], lineStart[1], 6, 0, Math.PI * 2);
-      ctx.arc(points[0][0], points[0][1], 6, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    if (ruleType === 'zone_intrusion' && points.length >= 2) {
-      ctx.strokeStyle = '#ef4444';
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(points[0][0], points[0][1]);
-      points.forEach((p) => ctx.lineTo(p[0], p[1]));
-      if (points.length >= 3) ctx.closePath();
-      ctx.stroke();
-      if (points.length >= 3) ctx.fill();
-      points.forEach((p) => {
-        ctx.fillStyle = '#ef4444';
+      if (ruleType === 'line_crossing' && isValidPoint(lineStart) && isValidPoint(points[0])) {
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(p[0], p[1], 5, 0, Math.PI * 2);
+        ctx.moveTo(lineStart[0], lineStart[1]);
+        ctx.lineTo(points[0][0], points[0][1]);
+        ctx.stroke();
+        ctx.fillStyle = '#3b82f6';
+        ctx.beginPath();
+        ctx.arc(lineStart[0], lineStart[1], 6, 0, Math.PI * 2);
+        ctx.arc(points[0][0], points[0][1], 6, 0, Math.PI * 2);
         ctx.fill();
-      });
+      }
+
+      const validPoints = points.filter(isValidPoint);
+      if (ruleType === 'zone_intrusion' && validPoints.length >= 2) {
+        ctx.strokeStyle = '#ef4444';
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(validPoints[0][0], validPoints[0][1]);
+        validPoints.forEach((p) => ctx.lineTo(p[0], p[1]));
+        if (validPoints.length >= 3) ctx.closePath();
+        ctx.stroke();
+        if (validPoints.length >= 3) ctx.fill();
+        validPoints.forEach((p) => {
+          ctx.fillStyle = '#ef4444';
+          ctx.beginPath();
+          ctx.arc(p[0], p[1], 5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+    } catch (err) {
+      console.error('GeometryEditor draw error:', err);
     }
   }, [lineStart, points, ruleType, width, height]);
 
@@ -97,7 +109,14 @@ export default function GeometryEditor({ imageUrl, ruleType, geometry, onChange,
 
   return (
     <div className="space-y-2">
-      <img ref={imgRef} src={imageUrl} alt="Snapshot" className="hidden" crossOrigin="anonymous" onLoad={draw} />
+      <img
+        ref={imgRef}
+        src={imageUrl}
+        alt="Snapshot"
+        className="hidden"
+        onLoad={draw}
+        onError={() => console.error('GeometryEditor: no se pudo cargar la imagen')}
+      />
       <canvas
         ref={canvasRef}
         width={width}

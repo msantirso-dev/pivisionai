@@ -213,6 +213,12 @@ class EventUpdate(BaseModel):
     assigned_to: Optional[UUID] = None
 
 
+class EventBulkUpdate(BaseModel):
+    event_ids: List[UUID]
+    status: EventStatus
+    comment: Optional[str] = None
+
+
 class EventSearchParams(BaseModel):
     camera_id: Optional[UUID] = None
     object_class: Optional[str] = None

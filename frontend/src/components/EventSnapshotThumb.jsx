@@ -1,14 +1,21 @@
 import { useEffect, useState } from 'react';
 import { Camera, X, ZoomIn } from 'lucide-react';
 import { evidence } from '../services/api';
+import EventReviewText from './EventReviewText';
 
-export default function EventSnapshotThumb({ snapshotUrl, alt = 'Evidencia del evento', size = 'md' }) {
+export default function EventSnapshotThumb({
+  snapshotUrl,
+  alt = 'Evidencia del evento',
+  size = 'md',
+  event = null,
+  showReviewInModal = true,
+}) {
   const [thumbUrl, setThumbUrl] = useState(null);
   const [fullUrl, setFullUrl] = useState(null);
   const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState(false);
 
-  const sizeClass = size === 'sm' ? 'w-16 h-11' : 'w-24 h-16';
+  const sizeClass = size === 'sm' ? 'w-16 h-11' : size === 'lg' ? 'w-36 h-24' : 'w-28 h-20';
 
   useEffect(() => {
     if (!snapshotUrl) return undefined;
@@ -101,12 +108,18 @@ export default function EventSnapshotThumb({ snapshotUrl, alt = 'Evidencia del e
           >
             <X className="w-6 h-6" />
           </button>
-          <img
-            src={fullUrl || thumbUrl}
-            alt={alt}
-            className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl border border-dark-600"
-            onClick={(e) => e.stopPropagation()}
-          />
+          <div className="max-w-4xl w-full flex flex-col items-center gap-4" onClick={(e) => e.stopPropagation()}>
+            <img
+              src={fullUrl || thumbUrl}
+              alt={alt}
+              className="max-w-full max-h-[75vh] object-contain rounded-lg shadow-2xl border border-dark-600"
+            />
+            {showReviewInModal && event && (
+              <div className="w-full card text-left">
+                <EventReviewText event={event} />
+              </div>
+            )}
+          </div>
         </div>
       )}
     </>

@@ -1,0 +1,15 @@
+# Uso local: docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+services:
+  backend:
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+
+  worker-ai:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

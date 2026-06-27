@@ -27,7 +27,7 @@ from app.models import (
 from app.services.ai_service import ai_service
 from app.services.correlation_service import correlate_ivs_with_ai, should_discard_ivs
 from app.services.dahua_service import dahua_api_service
-from app.services.event_scorer import calculate_event_score
+from app.services.event_review import build_review_description
 from app.services.health_service import health_service
 from app.services.notification_service import notification_service
 from app.services.rule_engine import rule_engine
@@ -238,6 +238,7 @@ async def _create_event(session: AsyncSession, camera: Camera, triggered: dict):
         "snapshot_url": snapshot_url,
         "status": event.status.value if hasattr(event.status, "value") else event.status,
         "actions": actions,
+        "llm_pending": run_llm_describe,
     }
 
     await ws_manager.send_event(event_dict)
@@ -592,8 +593,9 @@ def analyze_event_with_llm(event_id: str, actions: dict | None = None, notify_af
             }
             event.metadata_ = meta
             parsed = analysis.get("parsed") or {}
-            if parsed.get("summary"):
-                event.description = parsed["summary"]
+            review_text = build_review_description(parsed, event.description or "")
+            if review_text:
+                event.description = review_text
             if parsed.get("threat_level") == "critical":
                 event.severity = EventSeverity.CRITICAL
             elif parsed.get("threat_level") == "high":

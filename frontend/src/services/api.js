@@ -86,6 +86,7 @@ export const events = {
   search: (params) => api.get('/events/search', { params }),
   get: (id) => api.get(`/events/${id}`),
   update: (id, data) => api.patch(`/events/${id}`, data),
+  bulkUpdate: (data) => api.post('/events/bulk', data),
   action: (id, data) => api.post(`/events/${id}/actions`, data),
 };
 

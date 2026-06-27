@@ -28,8 +28,14 @@ def format_event_caption(event: Dict[str, Any]) -> str:
     llm = (event.get("metadata") or {}).get("llm_analysis") or {}
     parsed = llm.get("parsed") or {}
     summary = parsed.get("summary") or llm.get("text")
+    clothing = parsed.get("person_clothing") or parsed.get("clothing")
     if summary:
-        lines.extend(["", "📝 Análisis IA:", str(summary)[:600]])
+        lines.extend(["", "📝 Reseña:", str(summary)[:400]])
+    if clothing and str(clothing).strip().lower() not in ("null", "none", "n/a"):
+        lines.extend(["👕 Vestimenta:", str(clothing)[:300]])
+    context_eval = parsed.get("context_evaluation") or parsed.get("context_match")
+    if context_eval:
+        lines.extend(["🎯 Contexto:", str(context_eval)[:200]])
 
     lines.extend([
         f"Criticidad: {severity}",

@@ -12,17 +12,24 @@ from app.services.llm_config import load_llm_config
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT = """Sos un analista de videovigilancia para centros de monitoreo.
-Analizá la imagen del evento de seguridad y respondé en JSON con este formato:
+Analizá la imagen del evento y respondé SOLO en JSON válido con este formato:
 {
-  "summary": "descripción breve en español",
+  "summary": "reseña breve en español (1-2 oraciones) de lo que ocurre en la imagen",
+  "person_detected": true,
+  "person_clothing": "si hay persona: colores, prendas, calzado, gorra, mochila, uniforme, etc. Si no hay persona visible, null",
+  "person_description": "edad aparente, postura, acción que realiza (ej. caminando, merodeando)",
+  "scene_description": "descripción general de la escena",
+  "context_evaluation": "evaluación según el contexto de la regla, si fue provisto",
   "threat_level": "none|low|medium|high|critical",
-  "objects_detected": ["persona", "vehículo", ...],
-  "scene_description": "qué ocurre en la escena",
+  "objects_detected": ["persona", "vehículo"],
   "false_positive_risk": "low|medium|high",
   "recommended_action": "acción sugerida para el operador",
-  "confidence": 0.0-1.0
+  "confidence": 0.0
 }
-Sé conciso y orientado a operaciones de seguridad."""
+Reglas:
+- Si hay personas visibles, person_clothing es OBLIGATORIO y debe ser específico.
+- Priorizá lo solicitado en el contexto de la regla en summary y context_evaluation.
+- Sé concreto, en español rioplatense, orientado al operador de seguridad."""
 
 
 class LLMVisionService:
@@ -90,10 +97,15 @@ class LLMVisionService:
                 f"Contexto de la regla (qué se busca identificar o validar): {context['context_description']}"
             )
             parts.append(
-                "Usá este contexto como criterio principal para evaluar la imagen y decidir si la alerta es relevante."
+                "Evaluá la imagen según ese contexto. Indicá en context_evaluation si se cumple o no."
+            )
+        elif context.get("object_class") == "person":
+            parts.append(
+                "Hay alerta de persona: describí en detalle vestimenta, accesorios y qué está haciendo."
             )
         if context.get("description"):
-            parts.append(f"Descripción automática: {context['description']}")
+            parts.append(f"Alerta automática previa: {context['description']}")
+        parts.append("Respondé en JSON con summary, person_clothing (si hay persona) y context_evaluation.")
         return "\n".join(parts)
 
     async def _analyze_ollama(self, image_b64: str, user_prompt: str, cfg: Dict) -> Dict:

@@ -4,6 +4,8 @@ import { Camera, Bell, Activity, AlertTriangle } from 'lucide-react';
 import { cameras, events, health, createEventWebSocket } from '../services/api';
 import SeverityBadge from '../components/SeverityBadge';
 import EventSnapshotThumb from '../components/EventSnapshotThumb';
+import EventReviewText from '../components/EventReviewText';
+import { mergeEventUpdate, getEventClothing } from '../utils/eventReview';
 import { format } from 'date-fns';
 
 export default function Dashboard() {
@@ -16,8 +18,14 @@ export default function Dashboard() {
     loadData();
     const ws = createEventWebSocket((msg) => {
       if (msg.type === 'event') {
-        setLiveEvents((prev) => [msg.data, ...prev].slice(0, 10));
-        setStats((s) => ({ ...s, events: s.events + 1, alerts: s.alerts + 1 }));
+        setLiveEvents((prev) => {
+          const isNew = !prev.some((e) => e.id === msg.data.id);
+          const merged = mergeEventUpdate(prev, msg.data).slice(0, 10);
+          if (isNew && !msg.data.llm_updated) {
+            setStats((s) => ({ ...s, events: s.events + 1, alerts: s.alerts + 1 }));
+          }
+          return merged;
+        });
       }
       if (msg.type === 'health') {
         setSystemHealth(msg.data);
@@ -94,9 +102,19 @@ export default function Dashboard() {
                   key={evt.id}
                   className="flex items-center gap-3 p-3 bg-dark-900 rounded-lg border border-dark-700"
                 >
-                  <EventSnapshotThumb snapshotUrl={evt.snapshot_url} alt={evt.description} size="sm" />
+                  <EventSnapshotThumb
+                    snapshotUrl={evt.snapshot_url}
+                    alt={evt.description}
+                    size="sm"
+                    event={evt}
+                  />
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium truncate">{evt.description || evt.event_type}</p>
+                    <EventReviewText event={evt} compact />
+                    {getEventClothing(evt) && (
+                      <p className="text-xs text-amber-200/80 truncate mt-0.5">
+                        Vestimenta: {getEventClothing(evt)}
+                      </p>
+                    )}
                     <p className="text-sm text-gray-400">
                       {evt.object_class && `${evt.object_class} · `}
                       {evt.occurred_at && format(new Date(evt.occurred_at), 'HH:mm:ss dd/MM')}
