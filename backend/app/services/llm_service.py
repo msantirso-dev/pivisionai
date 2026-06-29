@@ -66,6 +66,8 @@ class LLMVisionService:
                 result = await self._analyze_ollama(image_b64, user_prompt, cfg)
             elif provider == "openai":
                 result = await self._analyze_openai(image_b64, user_prompt, cfg)
+            elif provider == "openrouter":
+                result = await self._analyze_openrouter(image_b64, user_prompt, cfg)
             else:
                 return {"success": False, "error": f"Proveedor LLM no soportado: {provider}"}
 
@@ -98,7 +100,31 @@ class LLMVisionService:
             }
         except Exception as e:
             logger.error("LLM analysis failed: %s", e)
-            return {"success": False, "error": str(e), "provider": provider}
+            return {"success": False, "error": self._format_error(e, provider), "provider": provider}
+
+    def _format_error(self, exc: Exception, provider: str) -> str:
+        msg = str(exc).strip()
+        if "429" in msg or "Too Many Requests" in msg:
+            if provider == "openai":
+                return (
+                    "OpenAI rechazó la solicitud (429 — límite de uso). "
+                    "Espere unos minutos, reduzca análisis automáticos por evento, "
+                    "o cambie a Ollama/OpenRouter en IA → Configuración."
+                )
+            if provider == "openrouter":
+                return (
+                    "OpenRouter rechazó la solicitud (429 — límite de uso). "
+                    "Espere unos minutos o elija otro modelo en IA → Configuración."
+                )
+            return "Proveedor LLM con límite de solicitudes (429). Intente más tarde."
+        if "401" in msg or "Unauthorized" in msg:
+            return "API key inválida o expirada. Revise la configuración del proveedor."
+        if "Connection refused" in msg or "ConnectError" in msg:
+            return (
+                "No se pudo conectar al proveedor LLM. "
+                "Si usa Ollama, verifique que esté corriendo y la URL base (host.docker.internal:11434)."
+            )
+        return msg or "Error desconocido en análisis LLM"
 
     def _build_user_prompt(self, context: Dict[str, Any]) -> str:
         parts = ["Analizá esta imagen de cámara de seguridad."]
@@ -193,7 +219,77 @@ class LLMVisionService:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
-            response.raise_for_status()
+            if response.status_code == 429:
+                raise ValueError(
+                    "OpenAI rate limit (429): demasiadas solicitudes. "
+                    "Espere o cambie a Ollama en la configuración IA."
+                )
+            if response.status_code >= 400:
+                try:
+                    detail = response.json().get("error", {}).get("message", response.text[:300])
+                except Exception:
+                    detail = response.text[:300]
+                raise ValueError(f"OpenAI error {response.status_code}: {detail}")
+            data = response.json()
+            text = data["choices"][0]["message"]["content"]
+            return {
+                "model": model,
+                "text": text,
+                "parsed": self._try_parse_json(text),
+                "raw": data,
+            }
+
+    async def _analyze_openrouter(self, image_b64: str, user_prompt: str, cfg: Dict) -> Dict:
+        api_key = cfg.get("openrouter_api_key")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY no configurada")
+
+        model = cfg.get("openrouter_model", "google/gemini-2.0-flash-001")
+        base_url = (cfg.get("openrouter_base_url") or "https://openrouter.ai/api/v1").rstrip("/")
+        system_prompt = cfg.get("system_prompt") or DEFAULT_PROMPT
+
+        payload = {
+            "model": model,
+            "max_tokens": cfg.get("max_tokens", 800),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                        },
+                    ],
+                },
+            ],
+        }
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        site_url = (cfg.get("openrouter_site_url") or "").strip()
+        app_name = (cfg.get("openrouter_app_name") or "PI Vision AI").strip()
+        if site_url:
+            headers["HTTP-Referer"] = site_url
+        if app_name:
+            headers["X-Title"] = app_name
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
+            if response.status_code == 429:
+                raise ValueError(
+                    "OpenRouter rate limit (429): demasiadas solicitudes. "
+                    "Espere o cambie de modelo."
+                )
+            if response.status_code >= 400:
+                try:
+                    detail = response.json().get("error", {}).get("message", response.text[:300])
+                except Exception:
+                    detail = response.text[:300]
+                raise ValueError(f"OpenRouter error {response.status_code}: {detail}")
             data = response.json()
             text = data["choices"][0]["message"]["content"]
             return {
@@ -241,7 +337,29 @@ class LLMVisionService:
                 r.raise_for_status()
                 return {"success": True, "message": "OpenAI API conectada correctamente"}
 
-        return {"success": False, "message": "Seleccioná un proveedor (ollama u openai)"}
+        if provider == "openrouter":
+            api_key = cfg.get("openrouter_api_key")
+            if not api_key:
+                return {"success": False, "message": "API key de OpenRouter no configurada"}
+            base_url = (cfg.get("openrouter_base_url") or "https://openrouter.ai/api/v1").rstrip("/")
+            headers = {"Authorization": f"Bearer {api_key}"}
+            site_url = (cfg.get("openrouter_site_url") or "").strip()
+            app_name = (cfg.get("openrouter_app_name") or "PI Vision AI").strip()
+            if site_url:
+                headers["HTTP-Referer"] = site_url
+            if app_name:
+                headers["X-Title"] = app_name
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.get(f"{base_url}/models", headers=headers)
+                r.raise_for_status()
+                model = cfg.get("openrouter_model", "google/gemini-2.0-flash-001")
+                return {
+                    "success": True,
+                    "message": f"OpenRouter conectado. Modelo configurado: {model}",
+                    "model_available": True,
+                }
+
+        return {"success": False, "message": "Seleccioná un proveedor (ollama, openai u openrouter)"}
 
     def _try_parse_json(self, text: str) -> Optional[Dict]:
         import json

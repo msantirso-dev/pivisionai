@@ -30,7 +30,7 @@ def extract_usage_from_response(provider: str, raw: Optional[Dict[str, Any]]) ->
 
     provider = (provider or "").lower()
 
-    if provider == "openai":
+    if provider == "openai" or provider == "openrouter":
         usage = raw.get("usage") or {}
         prompt = int(usage.get("prompt_tokens") or 0)
         completion = int(usage.get("completion_tokens") or 0)

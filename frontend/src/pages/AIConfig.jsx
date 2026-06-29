@@ -56,6 +56,7 @@ export default function AIConfigPage() {
     try {
       const payload = { ...config };
       if (payload.openai_api_key === '') delete payload.openai_api_key;
+      if (payload.openrouter_api_key === '') delete payload.openrouter_api_key;
       const res = await llm.updateConfig(payload);
       setConfig(res.data);
       alert('Configuración guardada');
@@ -171,6 +172,18 @@ export default function AIConfigPage() {
       )}
 
       <form onSubmit={handleSave} className="card space-y-5">
+        {config.config_source === 'database' && (
+          <div className="text-sm p-3 rounded-lg bg-amber-900/25 border border-amber-800/50 text-amber-100">
+            Proveedor activo: <strong>{config.effective_provider || config.provider}</strong>
+            {' '}(guardado en la app — tiene prioridad sobre <code className="text-amber-200">.env</code>).
+            {config.provider === 'openai' && (
+              <span className="block mt-1 text-amber-200/90 text-xs">
+                Si querés usar Ollama u OpenRouter como indica el .env, elegí el proveedor abajo y pulsá Guardar.
+              </span>
+            )}
+          </div>
+        )}
+
         <label className="flex items-center gap-3">
           <input
             type="checkbox"
@@ -198,6 +211,7 @@ export default function AIConfigPage() {
           >
             <option value="ollama">Ollama (local)</option>
             <option value="openai">OpenAI / ChatGPT</option>
+            <option value="openrouter">OpenRouter</option>
           </select>
         </div>
 
@@ -260,6 +274,69 @@ export default function AIConfigPage() {
                 value={config.openai_base_url || ''}
                 onChange={(e) => setConfig((c) => ({ ...c, openai_base_url: e.target.value }))}
                 placeholder="https://api.openai.com/v1"
+              />
+            </div>
+          </div>
+        )}
+
+        {config.provider === 'openrouter' && (
+          <div className="grid grid-cols-2 gap-4 p-4 bg-dark-900 rounded-lg border border-dark-700">
+            <div className="col-span-2 text-sm text-primary-400 font-medium">Configuración OpenRouter</div>
+            <div className="col-span-2">
+              <label className="text-sm text-gray-400">API Key</label>
+              <input
+                type="password"
+                className="input mt-1"
+                placeholder={config.openrouter_api_key_masked || 'sk-or-v1-...'}
+                onChange={(e) => setConfig((c) => ({ ...c, openrouter_api_key: e.target.value }))}
+              />
+              {config.openrouter_api_key_set && (
+                <p className="text-xs text-green-400 mt-1">Key configurada: {config.openrouter_api_key_masked}</p>
+              )}
+              <p className="text-xs text-gray-500 mt-1">
+                Obtené tu key en{' '}
+                <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-primary-400 hover:underline">
+                  openrouter.ai/keys
+                </a>
+              </p>
+            </div>
+            <div className="col-span-2">
+              <label className="text-sm text-gray-400">Modelo (con visión)</label>
+              <input
+                className="input mt-1 font-mono text-sm"
+                value={config.openrouter_model || ''}
+                onChange={(e) => setConfig((c) => ({ ...c, openrouter_model: e.target.value }))}
+                placeholder="google/gemini-2.0-flash-001"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Ej: openai/gpt-4o-mini · google/gemini-2.0-flash-001 · anthropic/claude-3.5-sonnet
+              </p>
+            </div>
+            <div>
+              <label className="text-sm text-gray-400">Base URL</label>
+              <input
+                className="input mt-1 text-sm"
+                value={config.openrouter_base_url || ''}
+                onChange={(e) => setConfig((c) => ({ ...c, openrouter_base_url: e.target.value }))}
+                placeholder="https://openrouter.ai/api/v1"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-400">Nombre app (X-Title)</label>
+              <input
+                className="input mt-1 text-sm"
+                value={config.openrouter_app_name || ''}
+                onChange={(e) => setConfig((c) => ({ ...c, openrouter_app_name: e.target.value }))}
+                placeholder="PI Vision AI"
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="text-sm text-gray-400">Site URL (HTTP-Referer, opcional)</label>
+              <input
+                className="input mt-1 text-sm"
+                value={config.openrouter_site_url || ''}
+                onChange={(e) => setConfig((c) => ({ ...c, openrouter_site_url: e.target.value }))}
+                placeholder="https://tu-dominio.com"
               />
             </div>
           </div>
@@ -338,7 +415,9 @@ export default function AIConfigPage() {
           OLLAMA_BASE_URL=http://host.docker.internal:11434<br />
           OLLAMA_MODEL=llava<br />
           OPENAI_API_KEY=sk-...<br />
-          OPENAI_MODEL=gpt-4o-mini
+          OPENAI_MODEL=gpt-4o-mini<br />
+          OPENROUTER_API_KEY=sk-or-v1-...<br />
+          OPENROUTER_MODEL=google/gemini-2.0-flash-001
         </code>
       </div>
     </div>

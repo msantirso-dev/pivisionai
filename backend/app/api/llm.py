@@ -27,6 +27,11 @@ class LLMConfigUpdate(BaseModel):
     openai_api_key: str | None = None
     openai_model: str | None = None
     openai_base_url: str | None = None
+    openrouter_api_key: str | None = None
+    openrouter_model: str | None = None
+    openrouter_base_url: str | None = None
+    openrouter_site_url: str | None = None
+    openrouter_app_name: str | None = None
     max_tokens: int | None = None
     system_prompt: str | None = None
 

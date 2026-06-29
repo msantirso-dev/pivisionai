@@ -23,6 +23,11 @@ def config_from_env() -> Dict[str, Any]:
         "openai_api_key": settings.openai_api_key,
         "openai_model": settings.openai_model,
         "openai_base_url": settings.openai_base_url,
+        "openrouter_api_key": settings.openrouter_api_key,
+        "openrouter_model": settings.openrouter_model,
+        "openrouter_base_url": settings.openrouter_base_url,
+        "openrouter_site_url": settings.openrouter_site_url,
+        "openrouter_app_name": settings.openrouter_app_name,
         "max_tokens": settings.llm_max_tokens,
         "system_prompt": settings.llm_system_prompt,
     }
@@ -39,10 +44,18 @@ def mask_api_key(key: str) -> str:
 def public_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Config safe for API responses (hide full API key)."""
     out = dict(cfg)
-    key = out.get("openai_api_key", "")
-    out["openai_api_key_set"] = bool(key)
-    out["openai_api_key_masked"] = mask_api_key(key)
+    openai_key = out.get("openai_api_key", "")
+    out["openai_api_key_set"] = bool(openai_key)
+    out["openai_api_key_masked"] = mask_api_key(openai_key)
     out.pop("openai_api_key", None)
+
+    or_key = out.get("openrouter_api_key", "")
+    out["openrouter_api_key_set"] = bool(or_key)
+    out["openrouter_api_key_masked"] = mask_api_key(or_key)
+    out.pop("openrouter_api_key", None)
+
+    out["config_source"] = out.pop("_config_source", "env")
+    out["effective_provider"] = out.get("provider") or "none"
     return out
 
 
@@ -74,7 +87,11 @@ async def _merge_db_config(session, cfg: Dict[str, Any]) -> Dict[str, Any]:
         merged = {**cfg, **row.config}
         if not row.config.get("openai_api_key") and cfg.get("openai_api_key"):
             merged["openai_api_key"] = cfg["openai_api_key"]
+        if not row.config.get("openrouter_api_key") and cfg.get("openrouter_api_key"):
+            merged["openrouter_api_key"] = cfg["openrouter_api_key"]
+        merged["_config_source"] = "database"
         return merged
+    cfg["_config_source"] = "env"
     return cfg
 
 
@@ -84,9 +101,11 @@ async def save_llm_config(session, updates: Dict[str, Any]) -> Dict[str, Any]:
     current = await load_llm_config(session)
     if updates.get("openai_api_key") in ("", None) and current.get("openai_api_key"):
         updates.pop("openai_api_key", None)
+    if updates.get("openrouter_api_key") in ("", None) and current.get("openrouter_api_key"):
+        updates.pop("openrouter_api_key", None)
 
     new_cfg = {**current, **{k: v for k, v in updates.items() if v is not None}}
-    env_only = {"openai_api_key"}
+    env_only = {"openai_api_key", "openrouter_api_key"}
     db_cfg = {k: v for k, v in new_cfg.items() if k not in env_only or v}
 
     result = await session.execute(
